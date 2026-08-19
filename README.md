@@ -24,17 +24,33 @@ parancssori felülete is – mindkettő ugyanazt a háttérdémont vezérli.
 
 ## Indítás Windows alatt
 
-Kattints duplán az **`inditas.bat`** fájlra. Ez megkeresi a Pythont, átadja a
-vezérlést az `indit.py`-nak, az pedig ellenőrzi a függőségeket (Python-verzió,
-tkinter, libtorrent – ez utóbbit szükség esetén telepíti), majd elindítja az
-ablakot. Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le.
+Kattints duplán az **`inditas.bat`** fájlra. Ez megkeresi a Pythont, és átadja
+a vezérlést az `indit.py`-nak, ami:
+
+1. létrehoz egy **saját virtuális környezetet a `.venv` mappában** (csak az első
+   indításkor), így a libtorrent nem a rendszer Pythonjába kerül, és nem
+   keveredik más programok csomagjaival,
+2. abban ellenőrzi a függőségeket, és szükség esetén telepíti a libtorrentet,
+3. elindítja az ablakot.
+
+Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le. A `.venv`
+mappa bármikor törölhető: a következő indításkor újra elkészül. Ha nem kéred a
+virtuális környezetet, a `TORRENTDL_NINCS_VENV=1` környezeti változóval
+kikapcsolható.
 
 > **Melyik Python kell?** A `libtorrent`-hez a készítői a **Python 3.13-ig**
 > adnak kész csomagot, ennél újabb Pythonhoz (pl. 3.14) nincs. Az indító ezt
-> felismeri: ha talál a gépen egy alkalmas változatot, magától arra vált; ha
-> nem, kiírja, hogy telepítsd a 3.13-at (a meglévő Python maradhat mellette).
+> felismeri: ha talál a gépen egy alkalmas változatot, azzal készíti el a
+> `.venv`-et; ha nincs ilyen, kiírja, hogy telepítsd a 3.13-at (a meglévő
+> Python maradhat mellette).
 
 ## Indítás máshol
+
+```bash
+python3 indit.py                     # ugyanaz, mint Windowson: .venv + felület
+```
+
+vagy kézzel, virtuális környezet nélkül:
 
 ```bash
 pip install -r requirements.txt      # libtorrent
@@ -149,7 +165,7 @@ torrentdl daemon stop                             # a változások újraindítá
 | fájl | mit csinál |
 |---|---|
 | `inditas.bat` | Windows-indító: megkeresi a Pythont, elindítja az `indit.py`-t |
-| `indit.py` | függőség-ellenőrzés (Python-verzió, tkinter, libtorrent), majd a felület indítása |
+| `indit.py` | `.venv` létrehozása, függőség-ellenőrzés (Python-verzió, tkinter, libtorrent), majd a felület indítása |
 | `torrentdl/gui.py` | a grafikus felület (tkinter) |
 | `torrentdl/cli.py` | a parancssori felület |
 | `torrentdl/engine.py` | a háttérdémon: libtorrent session, állapotgép, vezérlőcsatorna |
@@ -172,7 +188,8 @@ python3 tests/futtato.py        # mind egyben
   a futtató magától használja).
 - `tests/bat_test.py` – a `.bat` fájl CRLF sorvégei, ASCII tartalma, `goto`
   címkéi (ezeken szokott elcsúszni a `cmd.exe`).
-- `tests/indit_test.py` – az indító függőség-ellenőrzései.
+- `tests/indit_test.py` – az indító függőség-ellenőrzései, a `.venv` kezelése
+  és a Python-verzió választása.
 
 ## Jogi megjegyzés
 

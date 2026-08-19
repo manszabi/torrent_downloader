@@ -32,6 +32,12 @@ KERESETT_VERZIOK = ["3.13", "3.12", "3.11", "3.10"]
 # Ezzel jelezzuk a masik Pythonnak, hogy mar valtottunk egyszer.
 VALTAS_JELZO = "TORRENTDL_INDITO_VALTOTT"
 
+# A program sajat virtualis kornyezete a projekt mappajaban. Igy a libtorrent
+# nem a rendszer Pythonjaba kerul, es nem keveredik mas programok csomagjaival.
+VENV_MAPPA = ".venv"
+VENV_JELZO = "TORRENTDL_INDITO_VENV"      # mar a venv-ben futunk (nem valtunk ujra)
+VENV_TILTAS = "TORRENTDL_NINCS_VENV"      # ezzel kikapcsolhato a venv hasznalata
+
 LETOLTES_URL = "https://www.python.org/downloads/"
 
 # A program ezeket hasznalja a Python szabvany konyvtarabol.
@@ -103,6 +109,7 @@ def csomag_sorok(utvonal):
 
 
 def _futtat(parancs):
+    sys.stdout.flush()
     try:
         return subprocess.call(parancs) == 0
     except OSError:
@@ -181,6 +188,7 @@ def valtas_masik_pythonra():
     print("")
     kornyezet = dict(os.environ)
     kornyezet[VALTAS_JELZO] = "1"
+    sys.stdout.flush()
     try:
         return subprocess.call([ut, os.path.join(ITT, "indit.py")], env=kornyezet)
     except OSError:
@@ -196,6 +204,79 @@ def tkinter_tanacs():
     print("")
     print("       Addig is hasznalhato a parancssoros valtozat:")
     print("       %s -m torrentdl status" % sys.executable)
+
+
+def venv_ut(gyoker=None):
+    """A virtualis kornyezet mappaja."""
+    return os.path.join(ITT if gyoker is None else gyoker, VENV_MAPPA)
+
+
+def venv_python(gyoker=None):
+    """A virtualis kornyezet Python-ja (akkor is, ha meg nem letezik)."""
+    alap = venv_ut(gyoker)
+    if os.name == "nt":
+        return os.path.join(alap, "Scripts", "python.exe")
+    return os.path.join(alap, "bin", "python")
+
+
+def venvben_vagyunk(gyoker=None):
+    """Igaz, ha eppen a program sajat .venv-jeben futunk.
+
+    A sys.prefix-et nezzuk, nem a futtatott fajlt: Linuxon a .venv/bin/python
+    csak egy hivatkozas a rendszer Pythonjara, igy a fajlok osszehasonlitasa
+    akkor is egyezest adna, amikor nem a venv-ben futunk."""
+    return os.path.abspath(sys.prefix) == os.path.abspath(venv_ut(gyoker))
+
+
+def venv_keszites(alap_python=None, gyoker=None):
+    """Letrehozza a .venv-et, ha meg nincs.
+
+    A virtualis kornyezet Python-janak utjat adja vissza, vagy None, ha nem
+    sikerult letrehozni (pl. irasvedett mappa)."""
+    cel = venv_python(gyoker)
+    if os.path.isfile(cel):
+        return cel
+    alap = alap_python or sys.executable
+    print("[..]   Virtualis kornyezet letrehozasa a %s mappaban (egyszeri)..."
+          % VENV_MAPPA)
+    if not _futtat([alap, "-m", "venv", venv_ut(gyoker)]) or not os.path.isfile(cel):
+        print("[FIGYELEM] A virtualis kornyezet nem jott letre.")
+        if os.name != "nt":
+            print("           Linuxon ehhez a python3-venv csomag kell.")
+        print("           A rendszer Pythonjaval folytatom.")
+        return None
+    print("[OK]   Virtualis kornyezet kesz.")
+    return cel
+
+
+def venv_inditas():
+    """A programot a sajat .venv-jeben inditja ujra.
+
+    A kilepesi kodot adja vissza, vagy None-t, ha nem lehetett venv-et
+    hasznalni (ilyenkor a hivo a rendszer Pythonjaval folytatja).
+    """
+    if os.environ.get(VENV_TILTAS) or os.environ.get(VENV_JELZO):
+        return None
+    if venvben_vagyunk():
+        return None
+    alap = sys.executable
+    if verzio_gond() or verzio_tul_uj():
+        # Ehhez a Pythonhoz nincs libtorrent: a venv-et is masikkal keszitsuk.
+        masik = masik_python()
+        if not masik:
+            return None  # a teendot majd az ellenorzes irja ki
+        alap = masik
+        print("[..]   A virtualis kornyezet ezzel a Pythonnal keszul: %s" % alap)
+    ut = venv_keszites(alap)
+    if not ut:
+        return None
+    kornyezet = dict(os.environ)
+    kornyezet[VENV_JELZO] = "1"
+    sys.stdout.flush()
+    try:
+        return subprocess.call([ut, os.path.join(ITT, "indit.py")], env=kornyezet)
+    except OSError:
+        return None
 
 
 def libtorrent_tanacs():
@@ -214,6 +295,14 @@ def libtorrent_tanacs():
     print("       programot - onnantol magatol azt a Pythont fogja hasznalni.")
 
 
+def _tartalek_telepites(parancs):
+    """Ujraprobalas felhasznaloi modban. A venv-ben erre nincs szukseg."""
+    if venvben_vagyunk():
+        return False
+    print("[..]   Ujraprobalom felhasznaloi modban...")
+    return _futtat(parancs[:4] + ["--user"] + parancs[4:])
+
+
 def csomagok_telepitese(utvonal):
     """pip install -r ..., ha kell. Igaz, ha minden rendben."""
     if not csomag_sorok(utvonal):
@@ -230,12 +319,10 @@ def csomagok_telepitese(utvonal):
     print("[..]   A libtorrent telepitese (ez az elso inditasnal par percig tarthat)...")
     alap = [sys.executable, "-m", "pip", "install",
             "--disable-pip-version-check", "-r", utvonal]
-    if not _futtat(alap):
-        print("[..]   Ujraprobalom felhasznaloi modban...")
-        if not _futtat(alap[:4] + ["--user"] + alap[4:]):
-            print("[HIBA] Nem sikerult telepiteni a libtorrent csomagot.")
-            print("       Lehetseges okok: nincs internetkapcsolat, tuzfal vagy proxy.")
-            return False
+    if not _futtat(alap) and not _tartalek_telepites(alap):
+        print("[HIBA] Nem sikerult telepiteni a libtorrent csomagot.")
+        print("       Lehetseges okok: nincs internetkapcsolat, tuzfal vagy proxy.")
+        return False
     if hianyzo_modulok(["libtorrent"]):
         print("[HIBA] A libtorrent a telepites utan sem importalhato.")
         print("       Probald kezzel: %s -m pip install libtorrent" % sys.executable)
@@ -249,7 +336,8 @@ def ellenorzes():
 
     Visszaadott ertek: "ok", "nincs_libtorrent" (masik Pythonnal meg mehet),
     vagy "hiba". A teendot minden esetben kiirja."""
-    print("[OK]   Python: %s" % sys.version.split()[0])
+    print("[OK]   Python: %s%s"
+          % (sys.version.split()[0], " (%s)" % VENV_MAPPA if venvben_vagyunk() else ""))
 
     gond = verzio_gond()
     if gond:
@@ -285,6 +373,14 @@ def ellenorzes():
 
 def main(indit=True):
     keret("Torrent letolto")
+
+    # Elso lepes: a program sajat virtualis kornyezeteben fussunk. Ha ez nem
+    # sikerul (vagy ki van kapcsolva), a rendszer Pythonjaval megyunk tovabb.
+    if indit:
+        kod = venv_inditas()
+        if kod is not None:
+            return kod
+
     allapot = ellenorzes()
     if allapot in ("nincs_libtorrent", "nincs_tkinter"):
         # Talan van a gepen egy masik Python, amiben minden megvan.
