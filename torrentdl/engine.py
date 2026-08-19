@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import errno
-import fcntl
 import logging
 import logging.handlers
 import os
@@ -16,7 +14,8 @@ from pathlib import Path
 import libtorrent as lt
 
 from . import config as cfgmod
-from .protocol import recv_line, send_line
+from .lock import SingleInstanceLock
+from .protocol import recv_line, send_line, tokens_match
 
 log = logging.getLogger("torrentdl")
 
@@ -78,8 +77,9 @@ class Daemon:
     def __init__(self, foreground: bool = False):
         self.home = cfgmod.home()
         self.cfg = cfgmod.load_config()
-        self.sock_path = cfgmod.socket_path()
-        self.pid_path = self.home / cfgmod.PID_NAME
+        self.endpoint_path = cfgmod.endpoint_path()
+        self.lock = SingleInstanceLock(self.home / cfgmod.PID_NAME)
+        self.token = cfgmod.new_token()
         self.job_path = self.home / cfgmod.JOB_NAME
         self.last_path = self.home / cfgmod.LAST_NAME
         self.resume_path = self.home / cfgmod.RESUME_NAME
@@ -88,13 +88,13 @@ class Daemon:
         self.foreground = foreground
 
         self.ses: lt.session | None = None
+        self.port = 0
         self.handle = None
         self.job: dict | None = None
         self.running = True
         self.verifying = False
         self._verify_started = 0.0
         self._verify_saw_checking = False
-        self._pid_file = None
         self._last_resume_save = 0.0
         self._last_job_flush = 0.0
         self._idle_since = time.time()
@@ -104,11 +104,14 @@ class Daemon:
 
     def run(self) -> int:
         setup_logging(self.home / cfgmod.LOG_NAME, to_stderr=self.foreground)
-        if not self._acquire_pidfile():
-            log.error("már fut egy démon")
+        if not self.lock.acquire():
+            log.error("már fut egy démon ezzel az adatkönyvtárral")
             return 1
-        signal.signal(signal.SIGTERM, self._on_signal)
-        signal.signal(signal.SIGINT, self._on_signal)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, self._on_signal)
+            except (ValueError, OSError):  # pragma: no cover - korlátozott platform
+                pass
 
         try:
             self.ses = self._make_session()
@@ -118,7 +121,12 @@ class Daemon:
             return 1
         sel = selectors.DefaultSelector()
         sel.register(listener, selectors.EVENT_READ)
-        log.info("démon elindult (pid=%s, port=%s)", os.getpid(), self.cfg["listen_port"])
+        log.info(
+            "démon elindult (pid=%s, vezérlőport=%s, torrent port=%s)",
+            os.getpid(),
+            self.port,
+            self.cfg["listen_port"],
+        )
 
         self._restore_job()
         try:
@@ -142,28 +150,14 @@ class Daemon:
         log.info("jel érkezett (%s), leállás", signum)
         self.running = False
 
-    def _acquire_pidfile(self) -> bool:
-        self._pid_file = open(self.pid_path, "a+")
-        try:
-            fcntl.flock(self._pid_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno in (errno.EACCES, errno.EAGAIN):
-                return False
-            raise
-        self._pid_file.seek(0)
-        self._pid_file.truncate()
-        self._pid_file.write(str(os.getpid()))
-        self._pid_file.flush()
-        return True
-
     def _bind_socket(self) -> socket.socket:
-        if self.sock_path.exists():
-            self.sock_path.unlink()  # a pidfile-zár garantálja, hogy ez elárvult socket
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(str(self.sock_path))
-        os.chmod(self.sock_path, 0o600)
+        """Vezérlőcsatorna a hurokcímen; a portot és a jelszót fájlba írjuk."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        self.port = sock.getsockname()[1]
         sock.listen(8)
         sock.setblocking(False)
+        cfgmod.write_endpoint(self.port, self.token)
         return sock
 
     def _shutdown(self) -> None:
@@ -182,16 +176,10 @@ class Daemon:
             except Exception:
                 log.exception("session állapot mentése sikertelen")
         try:
-            self.sock_path.unlink()
+            self.endpoint_path.unlink()
         except OSError:
             pass
-        if self._pid_file is not None:
-            try:
-                fcntl.flock(self._pid_file, fcntl.LOCK_UN)
-                self._pid_file.close()
-                self.pid_path.unlink()
-            except OSError:
-                pass
+        self.lock.release()
         log.info("démon leállt")
 
     # --------------------------------------------------------------- session
@@ -514,9 +502,15 @@ class Daemon:
                     pass
 
     def _dispatch(self, request: dict):
+        if not tokens_match(self.token, request.get("token")):
+            raise ValueError("érvénytelen jelszó")
         command = request.get("command")
         handler = {
-            "ping": lambda r: {"pid": os.getpid(), "version": lt.__version__},
+            "ping": lambda r: {
+                "pid": os.getpid(),
+                "version": lt.__version__,
+                "port": self.port,
+            },
             "status": lambda r: self.cmd_status(),
             "add": self.cmd_add,
             "pause": self.cmd_pause,

@@ -2,7 +2,10 @@
 
 Egyszerű torrent letöltő Pythonban, [libtorrent](https://libtorrent.org/) motorral.
 Egyszerre **egy** torrentet (vagy magnet linket) tölt, a háttérben fut, és
-összeomlás után is folytatja onnan, ahol abbahagyta.
+összeomlás után is folytatja onnan, ahol abbahagyta. Van grafikus felülete és
+parancssori felülete is – mindkettő ugyanazt a háttérdémont vezérli.
+
+![A program ablaka](docs/kepernyokep.png)
 
 ## Mit tud
 
@@ -19,17 +22,43 @@ Egyszerre **egy** torrentet (vagy magnet linket) tölt, a háttérben fut, és
 - **DHT**, **PEX**, **LSD** (helyi hálózati peer-keresés) — alapból bekapcsolva.
 - **Titkosítás** (MSE/PE protokoll-titkosítás) — alapból bekapcsolva, kikényszeríthető.
 
-## Telepítés
+## Indítás Windows alatt
+
+Kattints duplán az **`inditas.bat`** fájlra. Ez megkeresi a Pythont, átadja a
+vezérlést az `indit.py`-nak, az pedig ellenőrzi a függőségeket (Python-verzió,
+tkinter, libtorrent – ez utóbbit szükség esetén telepíti), majd elindítja az
+ablakot. Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le.
+
+## Indítás máshol
 
 ```bash
 pip install -r requirements.txt      # libtorrent
-# vagy parancsként:
-pip install .                        # utána egyszerűen: torrentdl ...
+python3 -m torrentdl gui             # grafikus felület
+python3 -m torrentdl status          # parancssor
+# vagy telepítve:
+pip install .                        # utána: torrentdl ... / torrentdl-gui
 ```
 
-Python 3.9+ szükséges. Telepítés nélkül is futtatható a repóból: `python3 -m torrentdl ...`
+Python 3.10+ és tkinter szükséges (a tkinter a Windows-telepítő része; Linuxon
+a `python3-tk` csomag). A parancssori rész tkinter nélkül is működik.
 
-## Használat
+## A grafikus felület
+
+- **Torrent / magnet** mező: beilleszthető magnet link, vagy `.torrent` fájl
+  tallózható; **Célmappa**: ide kerülnek a fájlok (a program megjegyzi).
+- **Letöltés indítása** – amíg fut egy letöltés, a gomb inaktív (egyszerre egy
+  torrent tölthető).
+- **Szünet**, **Szünet időre…** (pl. `45s`, `30m`, `2h`, `1h30m` – egység nélkül
+  perc), **Folytatás**, **Megszakítás**, **Törlés a fájlokkal** (rákérdez).
+- Alul a **napló** a háttérdémon üzeneteit mutatja, a státuszsor pedig a démon
+  állapotát, a portot, a DHT/PEX és a titkosítás beállítását.
+- A **Beállítások…** ablakban állítható a port, a sebességkorlátok, a
+  kapcsolatszám, a titkosítás módja és a DHT/PEX/LSD/µTP; mentés után a démon
+  újraindul, a letöltés pedig ott folytatódik, ahol tartott.
+- Az ablak bezárása **nem** szakítja meg a letöltést: a háttérdémon tovább
+  dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés.
+
+## Használat parancssorból
 
 ```bash
 # letöltés indítása (magnet link vagy .torrent fájl)
@@ -109,14 +138,35 @@ torrentdl daemon stop                             # a változások újraindítá
   utána hibaállapotba kerül, és a `status` kiírja az okot).
 - Egyszerre csak egy letöltés lehet aktív: ha van futó munka, az `add` hibaüzenettel elutasít.
 
+## Fájlok
+
+| fájl | mit csinál |
+|---|---|
+| `inditas.bat` | Windows-indító: megkeresi a Pythont, elindítja az `indit.py`-t |
+| `indit.py` | függőség-ellenőrzés (Python-verzió, tkinter, libtorrent), majd a felület indítása |
+| `torrentdl/gui.py` | a grafikus felület (tkinter) |
+| `torrentdl/cli.py` | a parancssori felület |
+| `torrentdl/engine.py` | a háttérdémon: libtorrent session, állapotgép, vezérlőcsatorna |
+| `torrentdl/client.py` | a démon indítása és vezérlése (ezt hívja a GUI és a CLI is) |
+| `torrentdl/config.py`, `format.py`, `lock.py`, `protocol.py` | beállítások, formázás, egypéldány-zár, protokoll |
+
 ## Tesztek
 
-Hálózat nélkül futtatható, végponttól végpontig teszt (kész fájlok ellenőrzése,
-szüneteltetés időzítéssel, `SIGKILL` utáni folytatás, törlés a fájlokkal):
+Minden teszt hálózat nélkül fut:
 
 ```bash
-python3 tests/smoke_test.py
+python3 tests/futtato.py        # mind egyben
 ```
+
+- `tests/smoke_test.py` – a letöltő motor: kész fájlok ellenőrzése és
+  alapállapotba állás, szüneteltetés időzítéssel, `SIGKILL` utáni folytatás,
+  törlés a fájlokkal.
+- `tests/gui_test.py` – valódi Tk ablakkal: indítás, hibás forrás kezelése,
+  gombok engedélyezése, szünet/folytatás, törlés (Linuxon `xvfb-run` kell hozzá,
+  a futtató magától használja).
+- `tests/bat_test.py` – a `.bat` fájl CRLF sorvégei, ASCII tartalma, `goto`
+  címkéi (ezeken szokott elcsúszni a `cmd.exe`).
+- `tests/indit_test.py` – az indító függőség-ellenőrzései.
 
 ## Jogi megjegyzés
 

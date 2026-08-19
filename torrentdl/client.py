@@ -1,0 +1,188 @@
+"""A háttérdémon vezérlése: indítás, parancsok, forrás beolvasása.
+
+Ezt használja a parancssori felület és a grafikus felület is.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+from . import config as cfgmod
+from .protocol import DaemonError, NotRunning, request
+
+DAEMON_START_TIMEOUT = 25.0
+
+
+def ping(timeout: float = 2.0):
+    """A futó démon adatai, vagy None, ha nem fut."""
+    try:
+        return request(cfgmod.read_endpoint(), "ping", timeout=timeout)
+    except DaemonError:
+        return None
+
+
+def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
+    """Elindítja a démont a háttérben, és megvárja, amíg válaszol."""
+    if ping():
+        return True
+    cmd = [python_executable(), "-m", "torrentdl", "daemon", "run"]
+    kwargs = {}
+    if sys.platform == "win32":  # pragma: no cover - Windowson fut
+        # Ne villanjon fel konzolablak, és éljen túl a szülő bezárását.
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
+        )
+    else:
+        kwargs["start_new_session"] = True
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(__file__).resolve().parent.parent), env.get("PYTHONPATH", "")]
+    ).strip(os.pathsep)
+    with open(os.devnull, "wb") as devnull:
+        subprocess.Popen(
+            cmd, stdin=devnull, stdout=devnull, stderr=devnull, env=env, **kwargs
+        )
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if ping(timeout=1.0):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def python_executable() -> str:
+    """A démonhoz konzol nélküli pythonw.exe helyett a sima python kell.
+
+    (A pythonw.exe alatt a gyermekfolyamat kimenete nem használható, a sima
+    python viszont a DETACHED_PROCESS miatt akkor sem nyit ablakot.)
+    """
+    if sys.platform == "win32":  # pragma: no cover - Windowson fut
+        candidate = Path(sys.executable).with_name("python.exe")
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
+class DaemonUnavailable(DaemonError):
+    """Nem sikerült elindítani a háttérdémont."""
+
+
+def ensure_daemon() -> None:
+    if not spawn_daemon():
+        raise DaemonUnavailable(
+            f"nem sikerült elindítani a háttérdémont (napló: {cfgmod.home() / cfgmod.LOG_NAME})"
+        )
+
+
+def call(command: str, **payload):
+    """Parancs a démonnak; szükség esetén elindítja."""
+    ensure_daemon()
+    return request(cfgmod.read_endpoint(), command, **payload)
+
+
+def stop_daemon(wait: float = 20.0) -> bool:
+    """Leállítja a démont. Igaz, ha (már) nem fut."""
+    if not ping():
+        return True
+    try:
+        request(cfgmod.read_endpoint(), "shutdown")
+    except DaemonError:
+        pass
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if not ping(timeout=1.0):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def fetch_status() -> dict:
+    """A démont kérdezzük; ha nem fut, a lemezre mentett állapotot mutatjuk."""
+    try:
+        data = request(cfgmod.read_endpoint(), "status")
+        data["daemon"] = True
+        return data
+    except DaemonError:
+        pass
+    return {
+        "daemon": False,
+        "job": cfgmod.read_json(cfgmod.path(cfgmod.JOB_NAME)),
+        "last": cfgmod.read_json(cfgmod.path(cfgmod.LAST_NAME)),
+        "config": cfgmod.load_config(),
+    }
+
+
+# ------------------------------------------------------------------ forrás
+
+
+class SourceError(ValueError):
+    """A megadott torrent/magnet forrás nem használható."""
+
+
+def load_source(source: str) -> dict:
+    """Magnet link, .torrent fájl vagy .torrent URL feldolgozása."""
+    source = source.strip()
+    if source.startswith("magnet:"):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(source).query)
+        name = (query.get("dn") or [""])[0]
+        if not query.get("xt"):
+            raise SourceError("hiányos magnet link (nincs benne 'xt' azonosító)")
+        return {"source": source, "source_type": "magnet", "name": name}
+
+    if source.startswith(("http://", "https://")):
+        try:
+            with urllib.request.urlopen(source, timeout=30) as response:
+                data = response.read()
+        except OSError as exc:
+            raise SourceError(f"nem sikerült letölteni a .torrent fájlt: {exc}") from exc
+        if not data.startswith(b"d"):
+            raise SourceError("a megadott URL nem .torrent fájlt adott vissza")
+        return {
+            "source": source,
+            "source_type": "file",
+            "torrent_data": data.hex(),
+            "name": torrent_name(data),
+        }
+
+    path = Path(source).expanduser()
+    if not path.is_file():
+        raise SourceError(f"nincs ilyen fájl: {source}")
+    data = path.read_bytes()
+    if not data.startswith(b"d"):
+        raise SourceError(f"ez nem .torrent fájl: {path.name}")
+    return {
+        "source": str(path.resolve()),
+        "source_type": "file",
+        "torrent_data": data.hex(),
+        "name": torrent_name(data),
+    }
+
+
+def torrent_name(data: bytes) -> str:
+    try:
+        import libtorrent as lt
+
+        return lt.torrent_info(lt.bdecode(data)).name()
+    except Exception:
+        return ""
+
+
+__all__ = [
+    "DaemonError",
+    "DaemonUnavailable",
+    "NotRunning",
+    "SourceError",
+    "call",
+    "ensure_daemon",
+    "fetch_status",
+    "load_source",
+    "ping",
+    "spawn_daemon",
+    "stop_daemon",
+]
