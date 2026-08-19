@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "torrentdl"
+version = "1.0.0"
+description = "Egyszerű, egy-torrentes letöltő libtorrent alapon (háttérben futó démonnal)"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["libtorrent>=2.0"]
+
+[project.scripts]
+torrentdl = "torrentdl.cli:main"
+
+[tool.setuptools]
+packages = ["torrentdl"]
