@@ -22,6 +22,7 @@ log = logging.getLogger("torrentdl")
 STATE_DOWNLOADING = "downloading"
 STATE_PAUSED = "paused"
 STATE_VERIFYING = "verifying"
+STATE_SEEDING = "seeding"
 STATE_ERROR = "error"
 
 MAX_VERIFY_ATTEMPTS = 2
@@ -277,6 +278,8 @@ class Daemon:
         job = cfgmod.read_json(self.job_path)
         if not job:
             return
+        if job.get("state") == STATE_SEEDING:
+            log.info("a megosztás folytatódik: %s", job.get("name") or job["source"])
         if job.get("state") == STATE_VERIFYING:
             # a félbemaradt ellenőrzés a hozzáadáskori ellenőrzés után újraindul
             job["state"] = STATE_DOWNLOADING
@@ -327,6 +330,8 @@ class Daemon:
     def _on_finished(self) -> None:
         if self.job is None or self.handle is None or self.verifying:
             return
+        if self.job.get("state") == STATE_SEEDING:
+            return  # már kész és ellenőrizve: megosztás közben nem ellenőrzünk újra
         attempts = int(self.job.get("verify_attempts", 0))
         log.info("letöltés kész, a fájlok épségének ellenőrzése indul")
         self.job["state"] = STATE_VERIFYING
@@ -396,11 +401,26 @@ class Daemon:
             "finished_at": time.time(),
             "verified": True,
         }
-        if not self.cfg["seed_after_complete"]:
-            self.ses.remove_torrent(self.handle)
+        cfgmod.write_json(self.last_path, info)
+
+        if self.cfg["seed_after_complete"]:
+            # A torrent a session-ben marad, és a munka is: így a felület
+            # mutatja a megosztást, a démon nem lép ki tétlenség miatt, és
+            # újraindítás után a mentett állapotból folytatódik a megosztás.
+            self.job["state"] = STATE_SEEDING
+            self.job["completed_at"] = info["finished_at"]
+            self.job["progress"] = 1.0
+            self.job["error"] = None
+            self._flush_job()
+            self._save_resume()
+            log.info(
+                "kész: %s -> %s (a megosztás folytatódik)", info["name"], info["save_path"]
+            )
+            return
+
+        self.ses.remove_torrent(self.handle)
         self.handle = None
         self.job = None
-        cfgmod.write_json(self.last_path, info)
         for stale in (self.resume_path, self.job_path, self.torrent_copy):
             try:
                 stale.unlink()
@@ -423,7 +443,7 @@ class Daemon:
                 self._do_resume()
             if now - self._last_resume_save >= float(self.cfg["resume_save_interval"]):
                 self._last_resume_save = now
-                if self.job["state"] in (STATE_DOWNLOADING, STATE_VERIFYING):
+                if self.job["state"] in (STATE_DOWNLOADING, STATE_VERIFYING, STATE_SEEDING):
                     self._save_resume(only_if_modified=True)
             if now - self._last_job_flush >= 10:
                 self._refresh_job_meta()
@@ -523,6 +543,10 @@ class Daemon:
         return handler(request)
 
     def cmd_add(self, request: dict):
+        if self.job is not None and self.job.get("state") == STATE_SEEDING:
+            # A kész torrent megosztása nem akadálya új letöltésnek: lezárjuk.
+            log.info("az előző letöltés megosztása véget ér: %s", self.job.get("name"))
+            self.cmd_cancel({"delete_files": False})
         if self.job is not None:
             raise ValueError(
                 "már fut egy letöltés (%s) – előbb fejezd be vagy szakítsd meg"
@@ -571,7 +595,8 @@ class Daemon:
         return self.cmd_status()
 
     def _do_resume(self) -> None:
-        self.job["state"] = STATE_DOWNLOADING
+        # A már befejezett letöltés megosztásba tér vissza, nem letöltésbe.
+        self.job["state"] = STATE_SEEDING if self.job.get("completed_at") else STATE_DOWNLOADING
         self.job["paused_until"] = None
         self.job["error"] = None
         if self.handle is not None and self.handle.is_valid():

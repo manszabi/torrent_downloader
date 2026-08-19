@@ -171,6 +171,49 @@ def main() -> int:
 
     check("megszakítás a fájlok törlésével", test_cancel)
 
+    # -------------------------------------------------- 5. megosztás a letöltés után
+    def test_seeding():
+        run(home, "config", "--set", "seed_after_complete=true")
+        run(home, "daemon", "stop", check=False)  # az új beállítás induláskor él
+        src = work / "megoszt" / "keszlet"
+        make_payload(src, 250_000)
+        torrent = make_torrent(src, work / "megoszt.torrent")
+        dest = work / "cel-megoszt"
+        dest.mkdir()
+        shutil.copytree(src, dest / src.name)  # már kész: az ellenőrzés után megosztás jön
+        run(home, "add", str(torrent), "-d", str(dest))
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "seeding",
+            timeout=60,
+            what="a megosztásba lépés a letöltés után",
+        )
+        assert status(home)["last"]["verified"] is True
+
+        # A démon leállítása és újraindítása után is megy tovább a megosztás.
+        run(home, "daemon", "stop")
+        assert (status(home)["job"] or {}).get("state") == "seeding", "a megosztás állapota elveszett"
+        run(home, "daemon", "start")
+        out = run(home, "status").stdout
+        assert "megosztás" in out, out
+        assert (status(home)["job"] or {}).get("state") == "seeding"
+
+        # Megosztás közben is indítható új letöltés: az előzőt magától lezárja.
+        masik = make_torrent(src, work / "megoszt2.torrent")
+        run(home, "add", str(masik), "-d", str(work / "cel-megoszt2"))
+        wait_for(
+            lambda: status(home)["job"] is not None
+            and status(home)["job"]["save_path"].endswith("cel-megoszt2"),
+            timeout=30,
+            what="az új letöltés indulása megosztás közben",
+        )
+        run(home, "cancel", "-y")
+        # A megosztott fájlok a helyükön maradtak.
+        assert (dest / src.name / "adat.bin").is_file()
+        run(home, "config", "--set", "seed_after_complete=false")
+        run(home, "daemon", "stop", check=False)
+
+    check("megosztás a letöltés után, újraindítás után is", test_seeding)
+
     run(home, "daemon", "stop", check=False)
     if FAILURES:
         print(f"\n{len(FAILURES)} teszt bukott el: {', '.join(FAILURES)}")
