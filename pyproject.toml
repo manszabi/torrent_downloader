@@ -7,7 +7,8 @@ name = "torrentdl"
 version = "1.0.0"
 description = "Egyszerű, egy-torrentes letöltő libtorrent alapon (háttérben futó démonnal)"
 readme = "README.md"
-requires-python = ">=3.10"
+# A felso hatart a libtorrent szabja meg: kesz csomag 3.13-ig van hozza.
+requires-python = ">=3.10,<3.14"
 dependencies = ["libtorrent>=2.0"]
 
 [project.scripts]

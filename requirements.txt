@@ -1,1 +1,3 @@
+# A libtorrenthez kesz (leforditott) csomag a Python 3.9-3.13 valtozatokhoz
+# letezik. Ujabb Python alatt az indit.py atvalt egy alkalmas valtozatra.
 libtorrent>=2.0

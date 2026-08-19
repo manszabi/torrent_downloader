@@ -29,6 +29,11 @@ vezérlést az `indit.py`-nak, az pedig ellenőrzi a függőségeket (Python-ver
 tkinter, libtorrent – ez utóbbit szükség esetén telepíti), majd elindítja az
 ablakot. Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le.
 
+> **Melyik Python kell?** A `libtorrent`-hez a készítői a **Python 3.13-ig**
+> adnak kész csomagot, ennél újabb Pythonhoz (pl. 3.14) nincs. Az indító ezt
+> felismeri: ha talál a gépen egy alkalmas változatot, magától arra vált; ha
+> nem, kiírja, hogy telepítsd a 3.13-at (a meglévő Python maradhat mellette).
+
 ## Indítás máshol
 
 ```bash
@@ -39,8 +44,9 @@ python3 -m torrentdl status          # parancssor
 pip install .                        # utána: torrentdl ... / torrentdl-gui
 ```
 
-Python 3.10+ és tkinter szükséges (a tkinter a Windows-telepítő része; Linuxon
-a `python3-tk` csomag). A parancssori rész tkinter nélkül is működik.
+Python 3.10–3.13 és tkinter szükséges (a felső határt a libtorrent szabja meg;
+a tkinter a Windows-telepítő része, Linuxon a `python3-tk` csomag). A
+parancssori rész tkinter nélkül is működik.
 
 ## A grafikus felület
 
