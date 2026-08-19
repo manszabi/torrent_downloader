@@ -89,6 +89,8 @@ def state_label(job: dict) -> str:
     label = STATE_LABELS.get(state, state)
     if state == "seeding":
         return label + " (a letöltés kész és ellenőrizve van)"
+    if state == "verifying" and job.get("recheck_reason"):
+        return f"{label} ({job['recheck_reason']})"
     if state == "paused" and job.get("paused_until"):
         label += f" (folytatás {human_time(max(0, job['paused_until'] - time.time()))} múlva)"
     # A motor részletesebb állapota csak akkor érdekes, ha többet mond

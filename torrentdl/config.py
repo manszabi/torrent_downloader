@@ -26,7 +26,11 @@ DEFAULT_CONFIG = {
     "max_connections": 200,
     # Működés
     "seed_after_complete": False,  # kész letöltés után nem seedelünk, alapállapotba állunk
-    "resume_save_interval": 30,    # másodperc: ilyen gyakran mentjük a folytatási adatot
+    "resume_save_interval": 30,
+    # Nem tiszta leállás (áramszünet, összeomlás) után teljes fájlellenőrzés.
+    # Nagyon nagy torrentnél ez percekig tarthat; kikapcsolva a program a
+    # mentett folytatási adatban bízik.
+    "verify_after_crash": True,    # másodperc: ilyen gyakran mentjük a folytatási adatot
     "idle_timeout": 600,           # ennyi tétlen másodperc után kilép a démon (0 = soha)
 }
 
@@ -109,6 +113,19 @@ def write_atomic(target: Path, data: bytes) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, target)
+        # A névcsere is elveszhet áramszünetnél, ha a könyvtár bejegyzése nem
+        # került ki a lemezre. Windowson erre nincs mód, ott az os.replace
+        # önmagában is atomi.
+        if os.name != "nt":
+            try:
+                konyvtar = os.open(str(target.parent), os.O_RDONLY)
+            except OSError:
+                konyvtar = None
+            if konyvtar is not None:
+                try:
+                    os.fsync(konyvtar)
+                finally:
+                    os.close(konyvtar)
     except BaseException:
         try:
             os.unlink(tmp)

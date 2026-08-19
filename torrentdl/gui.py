@@ -11,6 +11,7 @@ Indítás Windows alatt: kattints duplán az `inditas.bat` fájlra. Máshol:
 from __future__ import annotations
 
 import contextlib
+import os
 import queue
 import sys
 import threading
@@ -33,6 +34,35 @@ CIM = "Torrent letöltő"
 FRISSITES_MP = 1000  # ilyen sűrűn kérdezzük le az állapotot (ezredmásodperc)
 UZENET_MP = 100  # ilyen sűrűn nézzük meg, üzent-e a háttérszál
 NAPLO_SOROK = 200
+
+
+def tcl_kornyezet(base: str | None = None, windows: bool | None = None) -> dict:
+    """Windowson a virtuális környezetből induló Python nem találja a Tcl/Tk-t.
+
+    A `.venv\\Scripts\\python.exe` mellett nincs `tcl` mappa, a Tk pedig ott
+    keresi az `init.tcl`-t, ezért "Can't find a usable init.tcl" hibával elszáll
+    az ablak megnyitása. A megoldás, hogy megmutatjuk neki az alap Python
+    telepítés `tcl` mappáját. A beállított változókat adja vissza (teszthez).
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows or os.environ.get("TCL_LIBRARY"):
+        return {}
+    alap = base if base is not None else getattr(sys, "base_prefix", sys.prefix)
+    gyoker = os.path.join(alap, "tcl")
+    if not os.path.isdir(gyoker):
+        return {}
+    beallitva = {}
+    for nev in sorted(os.listdir(gyoker)):
+        teljes = os.path.join(gyoker, nev)
+        if not os.path.isdir(teljes):
+            continue
+        if nev.startswith("tcl8") and "TCL_LIBRARY" not in beallitva:
+            beallitva["TCL_LIBRARY"] = teljes
+        elif nev.startswith("tk8") and "TK_LIBRARY" not in beallitva:
+            beallitva["TK_LIBRARY"] = teljes
+    os.environ.update(beallitva)
+    return beallitva
 
 
 def dpi_tudatossag() -> None:
@@ -64,6 +94,9 @@ def gomb_allapotok(status: dict) -> dict:
         "idozitett": van_munka and state in ("downloading", "verifying", "seeding"),
         "megszakit": van_munka,
         "torol": van_munka,
+        # Ellenőrzés akkor van értelme, ha van fájl a lemezen és épp nem megy
+        # már egy ellenőrzés.
+        "ellenoriz": van_munka and state in ("downloading", "paused", "seeding", "error"),
     }
 
 
@@ -162,10 +195,12 @@ class App(tk.Tk):
         )
         # A felirat megosztás közben "Megosztás vége"-re vált (lásd _allapot_kirajzol).
         self.megszakit_gomb.grid(row=0, column=3, padx=6)
+        self.ellenoriz_gomb = ttk.Button(gombok, text="Ellenőrzés", command=self._ellenorzes)
+        self.ellenoriz_gomb.grid(row=0, column=4, padx=6)
         self.torol_gomb = ttk.Button(
             gombok, text="Törlés a fájlokkal", command=lambda: self._megszakitas(True)
         )
-        self.torol_gomb.grid(row=0, column=4, padx=6)
+        self.torol_gomb.grid(row=0, column=5, padx=6)
 
         naplo_keret = ttk.LabelFrame(self, text="Napló", padding=6)
         naplo_keret.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
@@ -279,6 +314,7 @@ class App(tk.Tk):
                 "idozitett": self.idozitett_gomb,
                 "megszakit": self.megszakit_gomb,
                 "torol": self.torol_gomb,
+                "ellenoriz": self.ellenoriz_gomb,
             }[nev]
             gomb.state(["!disabled"] if aktiv else ["disabled"])
 
@@ -361,6 +397,10 @@ class App(tk.Tk):
 
     def _folytatas(self) -> None:
         self._kuld(lambda: client.call("resume"), "resume")
+
+    def _ellenorzes(self) -> None:
+        """A lemezen lévő adat teljes ellenőrzése; a hibás részt újratölti."""
+        self._kuld(lambda: client.call("check"), "check")
 
     def _megszakitas(self, fajlokkal: bool) -> None:
         megoszt = self.utolso_allapot == "seeding"
@@ -534,6 +574,7 @@ class Beallitasok(tk.Toplevel):
 
 
 def main() -> int:
+    tcl_kornyezet()
     dpi_tudatossag()
     app = App()
     app.mainloop()

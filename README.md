@@ -97,6 +97,7 @@ torrentdl pause --for 45m      # 45 perc múlva magától folytatja (45s, 2h, 1h
 torrentdl resume
 
 # megszakítás
+torrentdl check                     # fájlok ellenőrzése; a hibás részt újratölti
 torrentdl cancel                    # a részben letöltött fájlok a helyükön maradnak
 torrentdl cancel --delete-files     # a fájlokat is törli (rákérdez; -y kihagyja)
 
@@ -141,6 +142,7 @@ torrentdl daemon stop                             # a változások újraindítá
 | `max_connections` | 200 | egyidejű kapcsolatok száma |
 | `seed_after_complete` | false | ha `true`, a kész letöltést megosztja tovább (lásd lent) |
 | `resume_save_interval` | 30 | ennyi másodpercenként menti a folytatási adatot |
+| `verify_after_crash` | true | nem tiszta leállás után teljes fájlellenőrzés |
 | `idle_timeout` | 600 | ennyi tétlen másodperc után a démon kilép (0 = soha) |
 
 ## Megosztás a letöltés után
@@ -156,6 +158,36 @@ a megosztásban marad:
   maradnak) vagy a **Törlés a fájlokkal** gombbal,
 - új letöltés indítása közben nem kell külön leállítani: az előző torrent
   megosztása magától véget ér.
+
+## Adatvesztés: mi történhet, és mit tesz a program
+
+Torrentnél minden darabnak van ellenőrző összege, így a sérülés **felismerhető**,
+és a hibás rész **újratölthető**. A program erre épít:
+
+| Eset | Mikor fordul elő | Mit tesz a program |
+|---|---|---|
+| Áramszünet, összeomlás, kilőtt folyamat | Windows és Linux | A lemezre még ki nem írt darabok elveszhetnek, miközben a mentett állapot késznek hiszi őket. Ezért a program **minden nem tiszta leállás után teljes ellenőrzést futtat**, és ami hiányzik vagy sérült, azt újratölti. |
+| Hibás darab a hálózatról | mindkettő | A libtorrent minden darabot ellenőriz; a hibásat eldobja és újratölti. A felület kiírja, hányszor fordult elő. |
+| Fájl megsérül vagy eltűnik a lemezen (vírusirtó karantén, kézi törlés, fájlrendszer-hiba) | mindkettő | Olvasási/írási hibánál a program magától ellenőrzést futtat, és újratölti az érintett részt (legfeljebb 3 kör, utána megáll és szól). Bármikor kérhető kézzel is: **Ellenőrzés** gomb / `torrentdl check`. |
+| Betelt a lemez | mindkettő | Nem próbálkozik vakon (az újratöltés is ugyanabba a hibába futna): megáll, és kiírja, hogy nincs elég hely. Helyfelszabadítás után **Folytatás**. |
+| Külső meghajtó leválasztva, megváltozott betűjel (Windows), lecsatolt kötet (Linux) | mindkettő | Felismeri, hogy a célmappa nincs meg, és **nem kezd újra letölteni máshová** – megáll, és szól, hogy csatlakoztasd a meghajtót. |
+| A program saját állapotfájljai (haladás, folytatási adat) | mindkettő | Minden mentés atomi: ideiglenes fájlba ír, `fsync`, majd névcsere (Linuxon a könyvtár bejegyzését is szinkronizálja). Félbeírt állapotfájl így nem keletkezik; ha mégis olvashatatlan, a program teljes ellenőrzéssel indul. |
+
+Windowson külön érdemes tudni:
+
+- a **vírusirtó** (Defender) karanténba teheti vagy zárolhatja a fájlt letöltés
+  közben – ilyenkor a program ellenőriz és újratölt, de a tartós megoldás egy
+  kivétel felvétele a célmappára;
+- a **260 karakteres útvonalkorlát** mély könyvtárszerkezetű torrentnél hibát
+  adhat: válassz rövidebb célmappát, vagy kapcsold be a hosszú útvonalakat;
+- alvó állapot/hibernálás után a letöltés magától folytatódik.
+
+Linuxon a lecsatolt vagy csak olvashatóra váltott fájlrendszer viselkedik
+ugyanígy: a program megáll és szól, nem tölt újra rossz helyre.
+
+Ha nagyon nagy torrenttel dolgozol, és nem akarod, hogy összeomlás után
+végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
+`torrentdl config --set verify_after_crash=false`.
 
 ## Hogyan működik
 

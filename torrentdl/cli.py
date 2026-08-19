@@ -77,6 +77,12 @@ def render_status(data: dict) -> str:
         arany = f" (arány: {uploaded / total:.2f})" if total else ""
         lines.append(f"Feltöltve: {human_bytes(uploaded)}{arany}")
     lines.append(f"Cél:      {job.get('save_path')}")
+    if job.get("repaired_bytes"):
+        lines.append(
+            "Javítás:  %s hiányzó/sérült adat újratöltése" % human_bytes(job["repaired_bytes"])
+        )
+    if job.get("hash_errors"):
+        lines.append(f"Hibás darabok (újratöltve): {job['hash_errors']}")
     if job.get("error"):
         lines.append(f"Hiba:     {job['error']}")
     if not data.get("daemon"):
@@ -138,6 +144,13 @@ def cmd_pause(args) -> int:
 
 def cmd_resume(args) -> int:
     print(render_status(call("resume")))
+    return 0
+
+
+def cmd_check(args) -> int:
+    data = call("check")
+    print("Fájlok ellenőrzése elindult; ami hiányzik vagy sérült, azt a program újratölti.\n")
+    print(render_status(data))
     return 0
 
 
@@ -269,6 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     resume = sub.add_parser("resume", help="felfüggesztett/megszakadt letöltés folytatása")
     resume.set_defaults(func=cmd_resume)
+
+    check = sub.add_parser(
+        "check",
+        aliases=["ellenoriz"],
+        help="a letöltött fájlok ellenőrzése; a hibás részt újratölti",
+    )
+    check.set_defaults(func=cmd_check)
 
     cancel = sub.add_parser(
         "cancel", aliases=["remove"], help="az aktuális letöltés megszakítása/törlése"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import logging
 import logging.handlers
 import os
@@ -14,6 +16,7 @@ from pathlib import Path
 import libtorrent as lt
 
 from . import config as cfgmod
+from .format import human_bytes as _meret
 from .lock import SingleInstanceLock
 from .protocol import recv_line, send_line, tokens_match
 
@@ -26,6 +29,16 @@ STATE_SEEDING = "seeding"
 STATE_ERROR = "error"
 
 MAX_VERIFY_ATTEMPTS = 2
+
+# Ennyiszer próbáljuk magunktól helyrehozni a lemezhibát (ellenőrzés + újratöltés),
+# utána már a felhasználónak kell közbelépnie.
+MAX_HIBA_JAVITAS = 3
+
+# Az ellenőrzés indításának okai (a naplóban és az állapotban is ez látszik).
+OK_BEFEJEZES = "befejezés"
+OK_INDULAS = "nem tiszta leállás"
+OK_LEMEZHIBA = "lemezhiba"
+OK_KERES = "kérésre"
 
 DHT_BOOTSTRAP = ",".join(
     [
@@ -58,6 +71,24 @@ def _enc_policy(name: str) -> int:
         "enabled": lt.enc_policy.enabled,
         "forced": lt.enc_policy.forced,
     }.get(str(name).lower(), lt.enc_policy.enabled)
+
+
+# Tele lemez hibakodja: POSIX-on ENOSPC, Windowson ERROR_DISK_FULL /
+# ERROR_HANDLE_DISK_FULL. (A számokat platformonként külön nézzük, mert
+# ugyanaz a szám máshol egészen mást jelent.)
+HELY_HIBAKODOK = (112, 39) if os.name == "nt" else (errno.ENOSPC,)
+HELY_SZOVEGEK = ("no space", "disk full", "not enough space", "nincs elég hely")
+
+
+def _hely_hiba(alert) -> bool:
+    """Igaz, ha a hibát a betelt lemez okozta."""
+    hiba = getattr(alert, "error", None)
+    if hiba is not None:
+        with contextlib.suppress(Exception):
+            if hiba.value() in HELY_HIBAKODOK:
+                return True
+    uzenet = alert.message().lower()
+    return any(jel in uzenet for jel in HELY_SZOVEGEK)
 
 
 def state_name(status) -> str:
@@ -93,9 +124,10 @@ class Daemon:
         self.handle = None
         self.job: dict | None = None
         self.running = True
-        self.verifying = False
-        self._verify_started = 0.0
-        self._verify_saw_checking = False
+        # Folyamatban lévő ellenőrzés: {"ok": ..., "kezdet": ..., "latott": bool}
+        self.recheck: dict | None = None
+        self._hiba_javitasok = 0
+        self._hash_hibak = 0
         self._last_resume_save = 0.0
         self._last_job_flush = 0.0
         self._idle_since = time.time()
@@ -162,6 +194,10 @@ class Daemon:
         return sock
 
     def _shutdown(self) -> None:
+        if self.job is not None:
+            # Ezzel jelezzük, hogy rendben álltunk le: indulásnál csak akkor
+            # ellenőrizzük végig a fájlokat, ha ez a jelzés hiányzik.
+            self.job["clean_shutdown"] = True
         if self.handle is not None and self.handle.is_valid():
             try:
                 self.handle.pause()
@@ -268,8 +304,15 @@ class Daemon:
             if job["source_type"] == "magnet":
                 atp = lt.parse_magnet_uri(job["source"])
             else:
-                atp = lt.add_torrent_params()
-                atp.ti = lt.torrent_info(str(self.torrent_copy))
+                try:
+                    atp = lt.add_torrent_params()
+                    atp.ti = lt.torrent_info(str(self.torrent_copy))
+                except Exception:
+                    # A mentett .torrent másolat sérült vagy hiányzik: ha az
+                    # eredeti fájl megvan, onnan olvassuk újra.
+                    log.warning("a mentett .torrent nem olvasható, az eredetit próbálom")
+                    atp = lt.add_torrent_params()
+                    atp.ti = lt.torrent_info(job["source"])
         atp.save_path = job["save_path"]
         atp.flags = self._torrent_flags(atp.flags, job["state"] == STATE_PAUSED)
         return atp
@@ -278,6 +321,7 @@ class Daemon:
         job = cfgmod.read_json(self.job_path)
         if not job:
             return
+        tiszta_leallas = bool(job.pop("clean_shutdown", False))
         if job.get("state") == STATE_SEEDING:
             log.info("a megosztás folytatódik: %s", job.get("name") or job["source"])
         if job.get("state") == STATE_VERIFYING:
@@ -293,6 +337,26 @@ class Daemon:
             self._flush_job()
             return
         log.info("letöltés folytatva: %s (%s)", job.get("name") or job["source"], job["state"])
+        if not self._cel_elerheto():
+            self._on_error(
+                "a célmappa nem érhető el (%s) – csatlakoztasd a meghajtót, "
+                "majd nyomd meg a Folytatás gombot" % job["save_path"]
+            )
+            return
+        if not tiszta_leallas and not self.cfg["verify_after_crash"]:
+            log.warning(
+                "a program nem rendesen állt le, de az indulási ellenőrzés ki van kapcsolva "
+                "(verify_after_crash=false)"
+            )
+        elif not tiszta_leallas:
+            # Áramszünet, összeomlás vagy kilőtt folyamat után a lemezen lévő
+            # adat és a mentett folytatási adat eltérhet (a rendszer nem írta ki
+            # az utolsó darabokat). Ilyenkor mindent újraellenőrzünk, és ami
+            # hiányzik vagy sérült, azt a program újratölti.
+            log.warning("a program nem rendesen állt le, teljes ellenőrzés indul")
+            self._ellenorzes_indit(OK_INDULAS)
+        elif job.get("recheck_pending"):
+            self._ellenorzes_indit(job["recheck_pending"])
 
     # ---------------------------------------------------------------- alertek
 
@@ -321,28 +385,54 @@ class Daemon:
         elif isinstance(alert, lt.torrent_checked_alert):
             log.info("fájlellenőrzés lefutott")
         elif isinstance(alert, (lt.torrent_error_alert, lt.file_error_alert)):
-            self._on_error(alert.message())
+            self._on_lemezhiba(alert)
+        elif isinstance(alert, lt.hash_failed_alert):
+            # A libtorrent magától újratölti a hibás darabot; mi csak számoljuk.
+            self._hash_hibak += 1
+            log.warning("hibás darab érkezett (%s. alkalom), a program újratölti",
+                        self._hash_hibak)
         elif isinstance(alert, lt.fastresume_rejected_alert):
             log.warning("folytatási adat elutasítva: %s", alert.message())
         elif isinstance(alert, lt.state_changed_alert):
             log.info("állapotváltás: %s", alert.message())
 
     def _on_finished(self) -> None:
-        if self.job is None or self.handle is None or self.verifying:
+        if self.job is None or self.handle is None or self.recheck:
             return
         if self.job.get("state") == STATE_SEEDING:
             return  # már kész és ellenőrizve: megosztás közben nem ellenőrzünk újra
-        attempts = int(self.job.get("verify_attempts", 0))
+        self.job["verify_attempts"] = int(self.job.get("verify_attempts", 0)) + 1
         log.info("letöltés kész, a fájlok épségének ellenőrzése indul")
-        self.job["state"] = STATE_VERIFYING
-        self.job["verify_attempts"] = attempts + 1
-        self._flush_job()
-        self.verifying = True
-        self._verify_started = time.time()
-        self._verify_saw_checking = False
-        self.handle.force_recheck()
+        self._ellenorzes_indit(OK_BEFEJEZES)
 
-    def _poll_verification(self) -> None:
+    def _ellenorzes_indit(self, ok: str) -> bool:
+        """Teljes fájlellenőrzés indítása.
+
+        A libtorrent minden darabot újraolvas és hasheléssel összeveti a
+        torrenttel; ami hiányzik vagy sérült, azt utána újratölti. Szüneteltetett
+        munkánál az ellenőrzés a folytatásig várat magára.
+        """
+        if self.job is None or self.handle is None or not self.handle.is_valid():
+            return False
+        if self.recheck:
+            return True  # már fut egy ellenőrzés
+        if self.job["state"] == STATE_PAUSED:
+            self.job["recheck_pending"] = ok
+            self._flush_job()
+            log.info("az ellenőrzés (%s) a folytatáskor indul el", ok)
+            return True
+        self.job["state"] = STATE_VERIFYING
+        self.job["recheck_reason"] = ok
+        self.job.pop("recheck_pending", None)
+        self._flush_job()
+        self.recheck = {"ok": ok, "kezdet": time.time(), "latott": False}
+        with contextlib.suppress(Exception):
+            self.handle.clear_error()
+        self.handle.force_recheck()
+        self.handle.resume()
+        return True
+
+    def _ellenorzes_figyeles(self) -> None:
         """Az ellenőrzés végét állapotlekérdezéssel követjük.
 
         A torrent_checked_alert megbízhatatlan időzítésű (a hozzáadáskori
@@ -358,29 +448,56 @@ class Daemon:
             lt.torrent_status.states.allocating,
         )
         if status.state in checking:
-            self._verify_saw_checking = True
+            self.recheck["latott"] = True
             return
-        if not self._verify_saw_checking and time.time() - self._verify_started < 5:
-            return  # az újraellenőrzés még el sem indult
+        if not self.recheck["latott"] and time.time() - self.recheck["kezdet"] < 5:
+            return  # az ellenőrzés még el sem indult
 
-        self.verifying = False
+        ok = self.recheck["ok"]
+        self.recheck = None
+        self.job.pop("recheck_reason", None)
         if status.progress >= 1.0 and not status.errc.value():
+            self._ellenorzes_rendben(ok)
+            return
+        self._ellenorzes_hianyt_talalt(ok, status)
+
+    def _ellenorzes_rendben(self, ok: str) -> None:
+        """Minden darab megvan és ép."""
+        self._hiba_javitasok = 0
+        if ok == OK_BEFEJEZES or not self.job.get("completed_at"):
             log.info("az ellenőrzés sikeres, minden fájl ép")
             self._complete()
             return
-        attempts = int(self.job.get("verify_attempts", 0))
-        if attempts >= MAX_VERIFY_ATTEMPTS:
-            self._on_error("az ellenőrzés hibás fájlokat talált, a letöltés leállt")
+        log.info("az ellenőrzés sikeres, a megosztás folytatódik")
+        self.job["state"] = STATE_SEEDING
+        self.job["error"] = None
+        self._refresh_job_meta()
+        self._flush_job()
+        self.handle.resume()
+
+    def _ellenorzes_hianyt_talalt(self, ok: str, status) -> None:
+        """Hiányzó vagy sérült adat: a hibás darabokat újratöltjük."""
+        # A "wanted" mezők csak a letöltendő fájlokat számolják (ha egyszer
+        # lesz fájlválasztás, akkor is jó marad).
+        hianyzik = max(0, int(status.total_wanted) - int(status.total_wanted_done))
+        if ok == OK_BEFEJEZES and int(self.job.get("verify_attempts", 0)) >= MAX_VERIFY_ATTEMPTS:
+            self._on_error("az ellenőrzés ismételten hibás fájlokat talált, a letöltés leállt")
             return
         log.warning(
-            "az ellenőrzés hiányzó/sérült darabokat talált (%.1f%%), letöltés folytatódik",
+            "az ellenőrzés hiányzó/sérült adatot talált: %s (%.1f%% van meg) – újratöltés indul",
+            _meret(hianyzik),
             status.progress * 100,
         )
         self.job["state"] = STATE_DOWNLOADING
+        self.job["error"] = None
+        self.job["repaired_bytes"] = int(self.job.get("repaired_bytes", 0)) + hianyzik
+        self.job["repaired_at"] = time.time()
+        self._refresh_job_meta()  # a mentett haladás is a lemez valóságát mutassa
         self._flush_job()
         self.handle.resume()
 
     def _on_error(self, message: str) -> None:
+        """Végleges hiba: a munka megáll, a felhasználónak kell közbelépnie."""
         if self.job is None:
             return
         log.error("hiba: %s", message)
@@ -389,6 +506,51 @@ class Daemon:
         self._flush_job()
         if self.handle is not None and self.handle.is_valid():
             self.handle.pause()
+
+    def _cel_elerheto(self) -> bool:
+        """A célmappa a helyén van-e.
+
+        Ha egy külső meghajtót leválasztottak (vagy Windowson megváltozott a
+        betűjele), a mappa eltűnik. Ilyenkor nem szabad ellenőrizni és újratölteni:
+        a program a régi útvonalra kezdene el letölteni, a meglévő adat pedig
+        elérhetetlen marad. Inkább megállunk, és szólunk a felhasználónak.
+        """
+        return self.job is not None and os.path.isdir(self.job["save_path"])
+
+    def _on_lemezhiba(self, alert) -> None:
+        """Fájl- vagy tárolóhiba: ami menthető, azt ellenőrzéssel helyrehozzuk.
+
+        Tele lemeznél vagy elérhetetlen mappánál nincs mit javítani (az
+        újratöltés is ugyanabba a hibába futna), ilyenkor megállunk és szólunk.
+        """
+        uzenet = alert.message()
+        if self.job is None:
+            return
+        if _hely_hiba(alert):
+            self._on_error("nincs elég szabad hely a lemezen: %s" % uzenet)
+            return
+        if not self._cel_elerheto():
+            self._on_error(
+                "a célmappa nem érhető el (%s) – ha külső meghajtóról van szó, "
+                "csatlakoztasd, majd nyomd meg a Folytatás gombot"
+                % self.job["save_path"]
+            )
+            return
+        self._hiba_javitasok += 1
+        if self._hiba_javitasok > MAX_HIBA_JAVITAS:
+            self._on_error(
+                "ismétlődő lemezhiba (%dx), a letöltés leállt: %s"
+                % (self._hiba_javitasok - 1, uzenet)
+            )
+            return
+        log.warning(
+            "lemezhiba (%d/%d): %s – ellenőrzés és az érintett rész újratöltése",
+            self._hiba_javitasok,
+            MAX_HIBA_JAVITAS,
+            uzenet,
+        )
+        self.job["error"] = None
+        self._ellenorzes_indit(OK_LEMEZHIBA)
 
     def _complete(self) -> None:
         status = self.handle.status()
@@ -434,8 +596,8 @@ class Daemon:
     def _periodic(self) -> None:
         now = time.time()
         if self.job is not None:
-            if self.verifying:
-                self._poll_verification()
+            if self.recheck:
+                self._ellenorzes_figyeles()
         if self.job is not None:
             until = self.job.get("paused_until")
             if self.job["state"] == STATE_PAUSED and until and now >= until:
@@ -536,6 +698,7 @@ class Daemon:
             "pause": self.cmd_pause,
             "resume": self.cmd_resume,
             "cancel": self.cmd_cancel,
+            "check": self.cmd_check,
             "shutdown": self.cmd_shutdown,
         }.get(command)
         if handler is None:
@@ -595,6 +758,11 @@ class Daemon:
         return self.cmd_status()
 
     def _do_resume(self) -> None:
+        if not self._cel_elerheto():
+            raise ValueError(
+                "a célmappa nem érhető el: %s – csatlakoztasd a meghajtót, "
+                "vagy szakítsd meg a letöltést" % self.job["save_path"]
+            )
         # A már befejezett letöltés megosztásba tér vissza, nem letöltésbe.
         self.job["state"] = STATE_SEEDING if self.job.get("completed_at") else STATE_DOWNLOADING
         self.job["paused_until"] = None
@@ -602,6 +770,9 @@ class Daemon:
         if self.handle is not None and self.handle.is_valid():
             self.handle.resume()
         self._flush_job()
+        varo = self.job.pop("recheck_pending", None)
+        if varo:
+            self._ellenorzes_indit(varo)
 
     def cmd_resume(self, request: dict):
         if self.job is None:
@@ -617,7 +788,7 @@ class Daemon:
         name = self.job.get("name") or self.job["source"]
         handle, self.handle = self.handle, None
         self.job = None
-        self.verifying = False
+        self.recheck = None
         warning = None
         if handle is not None and handle.is_valid():
             # metaadat nélkül (pl. friss magnet) még nincs mit törölni a lemezről
@@ -648,6 +819,14 @@ class Daemon:
             time.sleep(0.05)
         log.warning("a fájlok törlésének visszaigazolása időtúllépés")
         return "a fájlok törlésének visszaigazolása időtúllépéssel zárult"
+
+    def cmd_check(self, request: dict):
+        """Fájlok ellenőrzése kérésre; a hiányzó/sérült részt újratölti."""
+        if self.job is None:
+            raise ValueError("nincs aktív letöltés")
+        self._ellenorzes_indit(OK_KERES)
+        log.info("ellenőrzés kérésre")
+        return self.cmd_status()
 
     def cmd_shutdown(self, request: dict):
         self.running = False
@@ -682,6 +861,8 @@ class Daemon:
                     "num_pieces": int(st.num_pieces),
                 }
             )
+        job["hash_errors"] = self._hash_hibak
+        job["disk_repairs"] = self._hiba_javitasok
         job["dht_nodes"] = int(self.ses.status().dht_nodes) if hasattr(self.ses, "status") else 0
         data["job"] = job
         return data

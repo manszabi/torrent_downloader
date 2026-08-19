@@ -86,10 +86,44 @@ def check(name: str, fn):
         print(f"    HIBA: {name}: {exc}")
 
 
+class HamisHibakod:
+    def __init__(self, ertek):
+        self._ertek = ertek
+
+    def value(self):
+        return self._ertek
+
+
+class HamisAlert:
+    """A libtorrent hibariasztóit utánozza (érték + üzenet)."""
+
+    def __init__(self, kod=0, uzenet=""):
+        self.error = HamisHibakod(kod)
+        self._uzenet = uzenet
+
+    def message(self):
+        return self._uzenet
+
+
+def test_hibafelismeres():
+    """A tele lemezt meg kell különböztetni a többi hibától."""
+    import errno as errno_modul
+
+    from torrentdl import engine
+
+    tele_kod = 112 if os.name == "nt" else errno_modul.ENOSPC
+    assert engine._hely_hiba(HamisAlert(tele_kod, "write failed"))
+    assert engine._hely_hiba(HamisAlert(0, "No space left on device"))
+    assert engine._hely_hiba(HamisAlert(0, "There is not enough space on the disk"))
+    assert not engine._hely_hiba(HamisAlert(errno_modul.EACCES, "permission denied"))
+    assert not engine._hely_hiba(HamisAlert(0, "file not found"))
+
+
 def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="torrentdl-test-"))
     home = work / "home"
     home.mkdir()
+    check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
@@ -213,6 +247,127 @@ def main() -> int:
         run(home, "daemon", "stop", check=False)
 
     check("megosztás a letöltés után, újraindítás után is", test_seeding)
+
+    # -------------------------------------------------- 6-7. adatvesztés és javítás
+    romlas = {}
+
+    def test_serult_adat():
+        """Megosztás közben megsérül egy fájl: az ellenőrzés újratöltendőnek jelöli."""
+        run(home, "config", "--set", "seed_after_complete=true")
+        run(home, "daemon", "stop", check=False)
+        src = work / "ep" / "adatok"
+        make_payload(src, 400_000)
+        torrent = make_torrent(src, work / "ep.torrent")
+        dest = work / "cel-ep"
+        dest.mkdir()
+        shutil.copytree(src, dest / src.name)
+        run(home, "add", str(torrent), "-d", str(dest))
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "seeding",
+            timeout=60,
+            what="a kész torrent megosztásba lépése",
+        )
+        fajl = dest / src.name / "adat.bin"
+        romlas["fajl"] = fajl
+        romlas["eredeti"] = fajl.read_bytes()
+
+        # Egy darab közepét felülírjuk: pontosan ezt kell újratöltenie.
+        rontott = bytearray(romlas["eredeti"])
+        rontott[150_000:150_500] = b"X" * 500
+        fajl.write_bytes(bytes(rontott))
+
+        run(home, "check")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "downloading",
+            timeout=90,
+            what="a sérült darab felismerése",
+        )
+        job = status(home)["job"]
+        assert job["progress"] < 1.0, "a program épnek hitte a sérült fájlt"
+        assert job.get("repaired_bytes", 0) > 0, job
+
+        # Helyreállítjuk a fájlt: az ellenőrzés után újra megosztás jön.
+        fajl.write_bytes(romlas["eredeti"])
+        run(home, "check")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "seeding",
+            timeout=90,
+            what="az ép fájl elfogadása",
+        )
+
+    check("sérült fájl felismerése és újratöltése", test_serult_adat)
+
+    def test_nem_tiszta_leallas():
+        """Áramszünet-szerű leállás: induláskor mindent újraellenőriz."""
+        pid = int((home / "daemon.lock").read_text().strip())
+        os.kill(pid, signal.SIGKILL)
+        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
+
+        # Amíg a program áll, "elromlik" a lemezen az adat.
+        fajl = romlas["fajl"]
+        rontott = bytearray(romlas["eredeti"])
+        rontott[20_000:20_800] = b"Y" * 800
+        fajl.write_bytes(bytes(rontott))
+
+        run(home, "daemon", "start")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "downloading",
+            timeout=90,
+            what="indulási ellenőrzés a nem tiszta leállás után",
+        )
+        job = status(home)["job"]
+        assert job["progress"] < 1.0, "a program a mentett állapotot hitte el a lemez helyett"
+
+        fajl.write_bytes(romlas["eredeti"])
+        run(home, "cancel", "-y")
+        run(home, "config", "--set", "seed_after_complete=false")
+        run(home, "daemon", "stop", check=False)
+
+    check("nem tiszta leállás után teljes ellenőrzés", test_nem_tiszta_leallas)
+
+    def test_levalasztott_meghajto():
+        """Ha a célmappa eltűnik, ne kezdjen újra letölteni máshová."""
+        run(home, "config", "--set", "seed_after_complete=true")
+        run(home, "daemon", "stop", check=False)
+        src = work / "kulso" / "mentes"
+        make_payload(src, 200_000)
+        torrent = make_torrent(src, work / "kulso.torrent")
+        dest = work / "cel-kulso"
+        dest.mkdir()
+        shutil.copytree(src, dest / src.name)
+        run(home, "add", str(torrent), "-d", str(dest))
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "seeding",
+            timeout=60,
+            what="a megosztásba lépés",
+        )
+
+        # "Leválasztjuk a meghajtót": a célmappa eltűnik, amíg a program áll.
+        run(home, "daemon", "stop")
+        dest.rename(work / "cel-kulso-elrejtve")
+        run(home, "daemon", "start")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") == "error",
+            timeout=30,
+            what="a hiányzó célmappa felismerése",
+        )
+        job = status(home)["job"]
+        assert "célmappa" in (job.get("error") or ""), job
+        assert not dest.exists(), "a program újra létrehozta a célmappát"
+
+        # "Visszacsatlakoztatjuk": folytatás után minden megy tovább.
+        (work / "cel-kulso-elrejtve").rename(dest)
+        run(home, "resume")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") in ("seeding", "verifying", "downloading"),
+            timeout=60,
+            what="folytatás a meghajtó visszacsatlakoztatása után",
+        )
+        run(home, "cancel", "-y")
+        run(home, "config", "--set", "seed_after_complete=false")
+        run(home, "daemon", "stop", check=False)
+
+    check("leválasztott meghajtó: nem tölt újra máshová", test_levalasztott_meghajto)
 
     run(home, "daemon", "stop", check=False)
     if FAILURES:

@@ -406,6 +406,16 @@ def main(indit=True):
         # Peldaul: nincs megjelenito (tavoli/szerver kornyezet).
         print("")
         print("[HIBA] Nem sikerult megnyitni az ablakot: %s" % hiba)
+        if "init.tcl" in str(hiba) or "Tcl" in str(hiba):
+            print("")
+            print("       Ez a Tcl/Tk (a tkinter grafikus resze) megtalalasan mult.")
+            print("       Probald ki virtualis kornyezet nelkul:")
+            if os.name == "nt":
+                print("       set TORRENTDL_NINCS_VENV=1 && %s indit.py"
+                      % os.path.basename(sys.executable))
+            else:
+                print("       TORRENTDL_NINCS_VENV=1 python3 indit.py")
+        print("")
         print("       A parancssoros valtozat ilyenkor is mukodik:")
         print("       %s -m torrentdl status" % sys.executable)
         return 1
