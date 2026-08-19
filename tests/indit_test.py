@@ -62,6 +62,36 @@ else:
     check("hianyzo libtorrent kulon eset", indit.ellenorzes(), "nincs_libtorrent")
 indit.csomagok_telepitese = eredeti_telepites
 
+# --- Virtualis kornyezet (.venv) ---------------------------------------
+varhato_veg = os.path.join("Scripts", "python.exe") if os.name == "nt" else os.path.join("bin", "python")
+check("a venv Python utja a szokasos helyen van",
+      indit.venv_python("/x").endswith(os.path.join(".venv", varhato_veg)), True)
+check("kivulrol nezve nem a venv-ben vagyunk", indit.venvben_vagyunk("/x"), False)
+
+os.environ[indit.VENV_TILTAS] = "1"
+check("kikapcsolhato a venv hasznalata", indit.venv_inditas(), None)
+del os.environ[indit.VENV_TILTAS]
+os.environ[indit.VENV_JELZO] = "1"
+check("a venv-ben mar nem inditunk ujabbat", indit.venv_inditas(), None)
+del os.environ[indit.VENV_JELZO]
+
+with tempfile.TemporaryDirectory() as gyoker:
+    ut = indit.venv_keszites(sys.executable, gyoker)
+    if ut is None:
+        print("kihagy  venv letrehozasa (a rendszeren nincs venv tamogatas)")
+    else:
+        check("a venv Python letrejott", os.path.isfile(ut), True)
+        # A rendszer Pythonjabol nezve NEM a venv-ben vagyunk. (Linuxon a
+        # .venv/bin/python csak hivatkozas a rendszer Pythonjara, ezert ezt
+        # kulon ellenorizzuk.)
+        check("a rendszer Pythonja nincs a venv-ben", indit.venvben_vagyunk(gyoker), False)
+        kod = ("import sys; sys.path.insert(0, %r); import indit; "
+               "print(indit.venvben_vagyunk(%r))" % (str(REPO), gyoker))
+        kimenet = indit._kimenet([ut, "-c", kod])
+        check("a venv Pythonja mar a venv-ben van", kimenet.splitlines()[-1:], ["True"])
+        # Masodik hivas: nem keszit ujat, a meglevot adja vissza.
+        check("meglevo venv-et nem keszit ujra", indit.venv_keszites(sys.executable, gyoker), ut)
+
 # --- Masik Python keresese ---------------------------------------------
 mas = indit.masik_python(["3.13", "3.12", "3.11", "3.10"])
 if mas is None:
