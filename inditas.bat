@@ -22,11 +22,22 @@ rem ---------------------------------------------------------------------------
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Torrent letolto   [indito v1]
+echo   Torrent letolto   [indito v2]
 echo ============================================================
 echo.
 
+rem  A libtorrent csomaghoz a Python 3.13-ig van kesz valtozat, ezert eloszor
+rem  ezeket keressuk. Ha egyik sincs, a talalt Pythonnal indulunk: az indit.py
+rem  akkor is megprobal atvaltani egy alkalmas valtozatra, ha talal ilyet.
 set "PY="
+py -3.13 -c "import sys" >nul 2>&1 && set "PY=py -3.13"
+if defined PY goto :python_megvan
+py -3.12 -c "import sys" >nul 2>&1 && set "PY=py -3.12"
+if defined PY goto :python_megvan
+py -3.11 -c "import sys" >nul 2>&1 && set "PY=py -3.11"
+if defined PY goto :python_megvan
+py -3.10 -c "import sys" >nul 2>&1 && set "PY=py -3.10"
+if defined PY goto :python_megvan
 py -3 -c "import sys" >nul 2>&1 && set "PY=py -3"
 if defined PY goto :python_megvan
 python -c "import sys" >nul 2>&1 && set "PY=python"
