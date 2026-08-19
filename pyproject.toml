@@ -7,11 +7,14 @@ name = "torrentdl"
 version = "1.0.0"
 description = "Egyszerű, egy-torrentes letöltő libtorrent alapon (háttérben futó démonnal)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["libtorrent>=2.0"]
 
 [project.scripts]
 torrentdl = "torrentdl.cli:main"
+
+[project.gui-scripts]
+torrentdl-gui = "torrentdl.gui:main"
 
 [tool.setuptools]
 packages = ["torrentdl"]

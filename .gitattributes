@@ -1,0 +1,2 @@
+# A Windows parancsfajlok sorvegei mindig CRLF-ek legyenek.
+*.bat text eol=crlf

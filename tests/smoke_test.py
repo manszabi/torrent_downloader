@@ -142,13 +142,9 @@ def main() -> int:
 
     # -------------------------------------------------- 3. összeomlás utáni folytatás
     def test_crash_resume():
-        pid = int((home / "daemon.pid").read_text())
+        pid = int((home / "daemon.lock").read_text().strip())
         os.kill(pid, signal.SIGKILL)
-        wait_for(
-            lambda: not (home / "daemon.sock").exists() or not pid_alive(pid),
-            timeout=20,
-            what="a démon leállása",
-        )
+        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
         assert "megszakadt" in text, text

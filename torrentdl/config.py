@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import secrets
+import sys
 import tempfile
 from pathlib import Path
 
@@ -33,13 +34,22 @@ CONFIG_KEY_TYPES = {k: type(v) for k, v in DEFAULT_CONFIG.items()}
 
 
 def home() -> Path:
-    """A program adatkönyvtára (felülírható a TORRENTDL_HOME környezeti változóval)."""
+    """A program adatkönyvtára (felülírható a TORRENTDL_HOME környezeti változóval).
+
+    Windowson az AppData, máshol az XDG szerinti adatkönyvtár alá kerül.
+    """
     env = os.environ.get("TORRENTDL_HOME")
     if env:
         base = Path(env).expanduser()
     else:
+        appdata = os.environ.get("APPDATA")
         xdg = os.environ.get("XDG_DATA_HOME")
-        base = Path(xdg).expanduser() / "torrentdl" if xdg else Path.home() / ".local" / "share" / "torrentdl"
+        if sys.platform == "win32" and appdata:
+            base = Path(appdata) / "torrentdl"
+        elif xdg:
+            base = Path(xdg).expanduser() / "torrentdl"
+        else:
+            base = Path.home() / ".local" / "share" / "torrentdl"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -48,8 +58,8 @@ def path(name: str) -> Path:
     return home() / name
 
 
-SOCKET_NAME = "daemon.sock"
-PID_NAME = "daemon.pid"
+ENDPOINT_NAME = "daemon.endpoint"
+PID_NAME = "daemon.lock"
 LOG_NAME = "daemon.log"
 SESSION_STATE_NAME = "session.state"
 JOB_NAME = "job.json"
@@ -57,18 +67,36 @@ LAST_NAME = "last.json"
 RESUME_NAME = "resume.dat"
 TORRENT_COPY_NAME = "current.torrent"
 CONFIG_NAME = "config.json"
+GUI_NAME = "gui.json"
 
-# A unix socket teljes útvonala nem lehet hosszabb ~107 bájtnál, ezért nagyon
-# mély adatkönyvtár esetén a /tmp alatt hozunk létre egy rövid, egyedi nevet.
-MAX_SOCKET_PATH = 100
+# A démon a hurokcímen (127.0.0.1) figyel egy szabad porton. A port és a
+# hozzá tartozó jelszó ebben a fájlban van – így a megoldás Windowson is
+# működik (ott nincs unix socket), és csak az fér a démonhoz, aki a fájlt
+# olvasni tudja.
 
 
-def socket_path() -> Path:
-    candidate = home() / SOCKET_NAME
-    if len(str(candidate).encode("utf-8")) <= MAX_SOCKET_PATH:
-        return candidate
-    digest = hashlib.sha1(str(home()).encode("utf-8")).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"torrentdl-{digest}.sock"
+def endpoint_path() -> Path:
+    return home() / ENDPOINT_NAME
+
+
+def write_endpoint(port: int, token: str) -> None:
+    target = endpoint_path()
+    write_json(target, {"host": "127.0.0.1", "port": int(port), "token": token})
+    try:
+        os.chmod(target, 0o600)
+    except OSError:  # pragma: no cover - egzotikus fájlrendszer
+        pass
+
+
+def read_endpoint():
+    data = read_json(endpoint_path())
+    if not isinstance(data, dict) or "port" not in data or "token" not in data:
+        return None
+    return data
+
+
+def new_token() -> str:
+    return secrets.token_hex(16)
 
 
 def write_atomic(target: Path, data: bytes) -> None:

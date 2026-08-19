@@ -1,0 +1,66 @@
+"""Egypéldányos zár: csak egy démon futhat egy adatkönyvtárral.
+
+A zárat az operációs rendszer tartja, ezért összeomlás (SIGKILL, áramszünet)
+után magától felszabadul – nem marad hátra „ragadt" zárfájl.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+if sys.platform == "win32":  # pragma: no cover - Windowson fut
+    import msvcrt
+else:
+    import fcntl
+
+
+class SingleInstanceLock:
+    """Fájlzár. A `szerzes()` hamissal tér vissza, ha már fut egy példány."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.handle = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(self.path, "a+")
+        try:
+            if sys.platform == "win32":  # pragma: no cover - Windowson fut
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        self.handle = handle
+        self._write_pid()
+        return True
+
+    def _write_pid(self) -> None:
+        # Windowson a zárolt első bájt nem írható felül, ezért utána írunk.
+        offset = 1 if sys.platform == "win32" else 0
+        self.handle.seek(offset)
+        self.handle.truncate(offset)
+        self.handle.write(("x" if offset else "") + str(os.getpid()) + "\n")
+        self.handle.flush()
+
+    def release(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            if sys.platform == "win32":  # pragma: no cover - Windowson fut
+                self.handle.seek(0)
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self.handle.close()
+        self.handle = None
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
