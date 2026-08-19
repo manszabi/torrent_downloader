@@ -55,11 +55,13 @@ def gomb_allapotok(status: dict) -> dict:
     job = status.get("job")
     state = (job or {}).get("state")
     van_munka = job is not None
+    # A kész torrent megosztása nem akadálya új letöltésnek: az indításkor
+    # a megosztás magától véget ér.
     return {
-        "indit": not van_munka,
-        "szunet": van_munka and state in ("downloading", "verifying"),
+        "indit": not van_munka or state == "seeding",
+        "szunet": van_munka and state in ("downloading", "verifying", "seeding"),
         "folytat": van_munka and state in ("paused", "error"),
-        "idozitett": van_munka and state in ("downloading", "verifying"),
+        "idozitett": van_munka and state in ("downloading", "verifying", "seeding"),
         "megszakit": van_munka,
         "torol": van_munka,
     }
@@ -91,6 +93,7 @@ class App(tk.Tk):
         self.valaszok: queue.Queue = queue.Queue()
         self.lekerdezes_fut = False
         self.utolso_naplo = ""
+        self.utolso_allapot = None
 
         self._epit()
         threading.Thread(target=self._munkas, daemon=True).start()
@@ -157,6 +160,7 @@ class App(tk.Tk):
         self.megszakit_gomb = ttk.Button(
             gombok, text="Megszakítás", command=lambda: self._megszakitas(False)
         )
+        # A felirat megosztás közben "Megosztás vége"-re vált (lásd _allapot_kirajzol).
         self.megszakit_gomb.grid(row=0, column=3, padx=6)
         self.torol_gomb = ttk.Button(
             gombok, text="Törlés a fájlokkal", command=lambda: self._megszakitas(True)
@@ -224,6 +228,7 @@ class App(tk.Tk):
 
     def _allapot_kirajzol(self, status: dict) -> None:
         job = status.get("job")
+        self.utolso_allapot = (job or {}).get("state")
         if job:
             szazalek = float(job.get("progress") or 0)
             self.nev_cimke.config(text=job.get("name") or job.get("source", ""))
@@ -263,6 +268,9 @@ class App(tk.Tk):
                 )
             )
 
+        self.megszakit_gomb.config(
+            text="Megosztás vége" if self.utolso_allapot == "seeding" else "Megszakítás"
+        )
         for nev, aktiv in gomb_allapotok(status).items():
             gomb = {
                 "indit": self.indit_gomb,
@@ -355,12 +363,15 @@ class App(tk.Tk):
         self._kuld(lambda: client.call("resume"), "resume")
 
     def _megszakitas(self, fajlokkal: bool) -> None:
-        kerdes = (
-            "Biztosan törlöd az aktuális letöltést a már letöltött fájlokkal együtt?"
-            if fajlokkal
-            else "Biztosan megszakítod az aktuális letöltést?\n"
-            "A részben letöltött fájlok a helyükön maradnak."
-        )
+        megoszt = self.utolso_allapot == "seeding"
+        if fajlokkal:
+            kerdes = "Biztosan törlöd ezt a torrentet a fájljaival együtt?"
+        elif megoszt:
+            kerdes = ("Befejezed a megosztást?\n"
+                      "A letöltött fájlok a helyükön maradnak.")
+        else:
+            kerdes = ("Biztosan megszakítod az aktuális letöltést?\n"
+                      "A részben letöltött fájlok a helyükön maradnak.")
         if not messagebox.askyesno(CIM, kerdes, parent=self, default="no" if fajlokkal else "yes"):
             return
         self._kuld(lambda: client.call("cancel", delete_files=fajlokkal), "cancel")

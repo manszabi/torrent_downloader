@@ -71,6 +71,11 @@ def render_status(data: dict) -> str:
     )
     if job.get("state") == "downloading":
         lines.append(f"Hátralévő idő: {human_time(eta) if eta is not None else '?'}")
+    if job.get("state") == "seeding":
+        total = float(job.get("total_bytes") or 0)
+        uploaded = float(job.get("uploaded") or 0)
+        arany = f" (arány: {uploaded / total:.2f})" if total else ""
+        lines.append(f"Feltöltve: {human_bytes(uploaded)}{arany}")
     lines.append(f"Cél:      {job.get('save_path')}")
     if job.get("error"):
         lines.append(f"Hiba:     {job['error']}")

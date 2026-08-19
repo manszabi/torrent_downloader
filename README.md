@@ -139,9 +139,23 @@ torrentdl daemon stop                             # a változások újraindítá
 | `max_download_rate` | 0 | letöltési korlát kB/s-ban (0 = korlátlan) |
 | `max_upload_rate` | 0 | feltöltési korlát kB/s-ban |
 | `max_connections` | 200 | egyidejű kapcsolatok száma |
-| `seed_after_complete` | false | ha `true`, kész letöltés után seedel tovább |
+| `seed_after_complete` | false | ha `true`, a kész letöltést megosztja tovább (lásd lent) |
 | `resume_save_interval` | 30 | ennyi másodpercenként menti a folytatási adatot |
 | `idle_timeout` | 600 | ennyi tétlen másodperc után a démon kilép (0 = soha) |
+
+## Megosztás a letöltés után
+
+Alapból a program a sikeres ellenőrzés után alapállapotba áll, és nem oszt meg
+tovább semmit. Ha a `seed_after_complete` beállítás `true`, akkor a kész torrent
+a megosztásban marad:
+
+- a felület `megosztás` állapotot mutat a feltöltött mennyiséggel,
+- a démon nem lép ki tétlenség miatt, és **a program bezárása, illetve a gép
+  újraindítása után is folytatja a megosztást** (a mentett állapotból),
+- a megosztás bármikor lezárható a **Megosztás vége** gombbal (a fájlok
+  maradnak) vagy a **Törlés a fájlokkal** gombbal,
+- új letöltés indítása közben nem kell külön leállítani: az előző torrent
+  megosztása magától véget ér.
 
 ## Hogyan működik
 
@@ -158,7 +172,8 @@ torrentdl daemon stop                             # a változások újraindítá
   darabot. Ha minden ép: a torrentet eltávolítja a session-ből, törli a munkaállományokat,
   és alapállapotba áll. Ha hibát talál, a hiányzó darabokat újratölti (legfeljebb kétszer,
   utána hibaállapotba kerül, és a `status` kiírja az okot).
-- Egyszerre csak egy letöltés lehet aktív: ha van futó munka, az `add` hibaüzenettel elutasít.
+- Egyszerre csak egy letöltés lehet aktív: ha van futó munka, az `add` hibaüzenettel
+  elutasít. Kivétel a kész torrent megosztása – azt az új letöltés indítása lezárja.
 
 ## Fájlok
 

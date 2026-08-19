@@ -9,6 +9,7 @@ UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}
 
 STATE_LABELS = {
     "downloading": "letöltés",
+    "seeding": "megosztás",
     "paused": "szüneteltetve",
     "verifying": "ellenőrzés",
     "error": "hiba",
@@ -86,6 +87,8 @@ def state_label(job: dict) -> str:
 
     state = job.get("state", "?")
     label = STATE_LABELS.get(state, state)
+    if state == "seeding":
+        return label + " (a letöltés kész és ellenőrizve van)"
     if state == "paused" and job.get("paused_until"):
         label += f" (folytatás {human_time(max(0, job['paused_until'] - time.time()))} múlva)"
     # A motor részletesebb állapota csak akkor érdekes, ha többet mond
