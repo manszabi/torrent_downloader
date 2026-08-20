@@ -120,6 +120,27 @@ def test_hibafelismeres():
     assert not engine._hely_hiba(HamisAlert(0, "file not found"))
 
 
+def test_folyamat_inditas():
+    """A háttérdémon indítási módja Windowson (konzolablak nélkül)."""
+    from torrentdl import client
+
+    jelzok = client.indito_jelzok(windows=True)
+    assert jelzok == client.CREATE_NO_WINDOW, hex(jelzok)
+    # A DETACHED_PROCESS (0x8) mellett a Windows eldobná a CREATE_NO_WINDOW-t,
+    # és a konzolablak a felület elé ugorhatna – ezért nem szabad ott lennie.
+    assert not jelzok & 0x8, "DETACHED_PROCESS nem lehet a jelzők között"
+    assert client.indito_jelzok(windows=False) == 0
+
+    # Windowson a konzol nélküli pythonw.exe kell, ha van.
+    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True) == (
+        "/x/pythonw.exe"
+    )
+    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False) == (
+        "/x/python.exe"
+    )
+    assert client.python_executable("/x/python3", windows=False) == "/x/python3"
+
+
 def test_session_statisztika():
     """A DHT-számláló kiolvasása a session statisztikából.
 
@@ -159,6 +180,7 @@ def main() -> int:
     home.mkdir()
     check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
     check("session statisztika (DHT-számláló)", test_session_statisztika)
+    check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 

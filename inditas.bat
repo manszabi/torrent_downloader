@@ -21,8 +21,12 @@ rem ---------------------------------------------------------------------------
 
 cd /d "%~dp0"
 
+rem  Jelezzuk az inditonak, hogy ez a konzolablak a sajatunk: amint megnyilik
+rem  a grafikus felulet, elrejtheti, hogy ne ugorjon az ablak ele.
+set "TORRENTDL_KONZOL=1"
+
 echo ============================================================
-echo   Torrent letolto   [indito v2]
+echo   Torrent letolto   [indito v3]
 echo ============================================================
 echo.
 
