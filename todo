@@ -1,1 +1,2 @@
 Amit szándékosan nem tettem meg: a mypy union-attr jelzéseit (a self.job/self.handle szűkítése metódushatárokon át) nem hajszoltam ki kódátalakítással — ezeket minden belépési pont ellenőrzi futásidőben, és a kikapcsolás okát a pyproject.toml rögzíti. Ha szeretnéd, ezt is át tudom építeni, de az az állapotgép átszervezésével jár.
+Python.exe ablaka főlé uggrik a gui-nak pl. beállítás módosításakor
