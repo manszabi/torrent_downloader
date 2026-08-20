@@ -33,6 +33,10 @@ a vezérlést az `indit.py`-nak, ami:
 2. abban ellenőrzi a függőségeket, és szükség esetén telepíti a libtorrentet,
 3. elindítja az ablakot.
 
+Amint megnyílik az ablak, a fekete konzolablak eltűnik (hiba esetén visszajön
+az üzenettel együtt), a háttérdémon pedig konzol nélküli Pythonnal indul – így
+semmi nem ugrik a program ablaka elé.
+
 Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le. A `.venv`
 mappa bármikor törölhető: a következő indításkor újra elkészül. Ha nem kéred a
 virtuális környezetet, a `TORRENTDL_NINCS_VENV=1` környezeti változóval

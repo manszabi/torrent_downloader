@@ -61,6 +61,24 @@ else:
     check("hianyzo libtorrent kulon eset", indit.ellenorzes(), "nincs_libtorrent")
 indit.csomagok_telepitese = eredeti_telepites
 
+# --- A konzolablak elrejtese (Windows) ---------------------------------
+hivasok = []
+os.environ.pop(indit.KONZOL_JELZO, None)
+check("sajat terminalbol inditva nem nyulunk az ablakhoz",
+      indit.konzol_lathatosag(False, lambda: 4242, lambda a, p: hivasok.append((a, p))), False)
+check("ilyenkor semmit nem hivunk", hivasok, [])
+
+os.environ[indit.KONZOL_JELZO] = "1"
+check("az inditobol jott ablakot elrejtjuk",
+      indit.konzol_lathatosag(False, lambda: 4242, lambda a, p: hivasok.append((a, p))), True)
+check("elrejtes parancsa", hivasok, [(4242, indit.SW_HIDE)])
+check("hiba eseten visszahozzuk",
+      indit.konzol_lathatosag(True, lambda: 4242, lambda a, p: hivasok.append((a, p))), True)
+check("megjelenites parancsa", hivasok[-1], (4242, indit.SW_SHOW))
+check("ablak nelkul nincs mit tenni",
+      indit.konzol_lathatosag(False, lambda: 0, lambda a, p: hivasok.append((a, p))), False)
+os.environ.pop(indit.KONZOL_JELZO, None)
+
 # --- Virtualis kornyezet (.venv) ---------------------------------------
 varhato_veg = (os.path.join("Scripts", "python.exe") if os.name == "nt"
                else os.path.join("bin", "python"))

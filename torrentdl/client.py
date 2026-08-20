@@ -13,6 +13,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from . import config as cfgmod
@@ -29,6 +30,53 @@ def ping(timeout: float = 2.0):
         return None
 
 
+# Windows folyamat-indítási jelző. A subprocess csak Windowson definiálja,
+# ezért a dokumentált számértéket írjuk ide – így máshol is tesztelhető.
+#
+# FONTOS: a CREATE_NO_WINDOW-t a Windows csendben eldobja, ha DETACHED_PROCESS
+# vagy CREATE_NEW_CONSOLE mellé kerül. Korábban így indítottuk a démont, és
+# emiatt a konzolablak a felület elé ugorhatott (pl. beállítás mentésekor,
+# amikor a démon újraindul). Ezért a jelzőt csak önmagában használjuk.
+CREATE_NO_WINDOW = 0x08000000
+
+
+def indito_jelzok(windows: bool | None = None) -> int:
+    """A gyermekfolyamat indítási jelzői (Windowson konzolablak nélkül)."""
+    if windows is None:
+        windows = sys.platform == "win32"
+    return CREATE_NO_WINDOW if windows else 0
+
+
+def _rejtett_ablak_beallitas():
+    """STARTUPINFO rejtett ablakkal – öv és nadrágtartó a konzolvillanás ellen."""
+    if sys.platform != "win32":  # pragma: no cover - csak Windowson értelmes
+        return None
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    info.wShowWindow = subprocess.SW_HIDE
+    return info
+
+
+def python_executable(
+    alap: str | None = None,
+    windows: bool | None = None,
+    letezik: Callable[[Path], bool] = Path.is_file,
+) -> str:
+    """A démont konzol nélküli Pythonnal indítjuk.
+
+    Windowson a `pythonw.exe` grafikus alkalmazásként indul: soha nem nyit
+    konzolt, és nem is veszi el a fókuszt a felülettől. A kimenete nem hiányzik,
+    mert a démon a saját naplófájljába ír.
+    """
+    futtatando = alap if alap is not None else sys.executable
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows:
+        return futtatando
+    jelolt = Path(futtatando).with_name("pythonw.exe")
+    return str(jelolt) if letezik(jelolt) else futtatando
+
+
 def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
     """Elindítja a démont a háttérben, és megvárja, amíg válaszol."""
     if ping():
@@ -39,15 +87,16 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
         [str(Path(__file__).resolve().parent.parent), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
     # A démon a saját naplójába ír, a csatornái ezért mehetnek a semmibe.
+    # (A gyermekfolyamat Windowson és Linuxon is túléli a szülő kilépését.)
     if sys.platform == "win32":  # pragma: no cover - Windowson fut
-        # Ne villanjon fel konzolablak, és élje túl a szülő bezárását.
         subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+            creationflags=indito_jelzok(True),
+            startupinfo=_rejtett_ablak_beallitas(),
         )
     else:
         subprocess.Popen(
@@ -64,19 +113,6 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
             return True
         time.sleep(0.25)
     return False
-
-
-def python_executable() -> str:
-    """A démonhoz konzol nélküli pythonw.exe helyett a sima python kell.
-
-    (A pythonw.exe alatt a gyermekfolyamat kimenete nem használható, a sima
-    python viszont a DETACHED_PROCESS miatt akkor sem nyit ablakot.)
-    """
-    if sys.platform == "win32":  # pragma: no cover - Windowson fut
-        candidate = Path(sys.executable).with_name("python.exe")
-        if candidate.is_file():
-            return str(candidate)
-    return sys.executable
 
 
 class DaemonUnavailable(DaemonError):
@@ -186,6 +222,7 @@ def torrent_name(data: bytes) -> str:
 
 
 __all__ = [
+    "CREATE_NO_WINDOW",
     "DaemonError",
     "DaemonUnavailable",
     "NotRunning",
@@ -193,8 +230,10 @@ __all__ = [
     "call",
     "ensure_daemon",
     "fetch_status",
+    "indito_jelzok",
     "load_source",
     "ping",
+    "python_executable",
     "spawn_daemon",
     "stop_daemon",
 ]

@@ -40,6 +40,14 @@ VENV_TILTAS = "TORRENTDL_NINCS_VENV"      # ezzel kikapcsolhato a venv hasznalat
 
 LETOLTES_URL = "https://www.python.org/downloads/"
 
+# A parancsfajl ezt allitja be: jelzi, hogy a konzolablak a mi inditonke, tehat
+# a felulet megnyitasakor elrejtheto. Ha valaki sajat terminalbol inditja a
+# programot, ez nincs beallitva - olyankor nem nyulunk az ablakahoz.
+KONZOL_JELZO = "TORRENTDL_KONZOL"
+
+SW_HIDE = 0
+SW_SHOW = 5
+
 # A program ezeket hasznalja a Python szabvany konyvtarabol.
 ALAP_MODULOK = ["json", "socket", "threading", "queue", "selectors", "logging",
                 "argparse", "secrets", "hmac", "subprocess", "urllib.request",
@@ -204,6 +212,42 @@ def tkinter_tanacs():
     print("")
     print("       Addig is hasznalhato a parancssoros valtozat:")
     print("       %s -m torrentdl status" % sys.executable)
+
+
+def konzol_ablak():
+    """A sajat konzolablak azonositoja Windowson (0, ha nincs ilyen)."""
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+        return ctypes.windll.kernel32.GetConsoleWindow()
+    except Exception:
+        return 0
+
+
+def konzol_lathatosag(latszik, ablak_lekero=None, megjelenito=None):
+    """A konzolablak elrejtese vagy megmutatasa. Igaz, ha sikerult.
+
+    A felulet mellett a konzolablak csak zavar: bizonyos muveleteknel (peldaul
+    beallitas mentesekor, amikor a hatterdemon ujraindul) a Windows elore
+    hozhatja, es rauszik a program ablakara. Ezert amint megnyilik a felulet,
+    elrejtjuk - hiba eseten viszont visszahozzuk, hogy latszodjon az uzenet.
+    """
+    if not os.environ.get(KONZOL_JELZO):
+        return False
+    ablak = (ablak_lekero or konzol_ablak)()
+    if not ablak:
+        return False
+    parancs = SW_SHOW if latszik else SW_HIDE
+    if megjelenito is not None:
+        megjelenito(ablak, parancs)
+        return True
+    try:
+        import ctypes
+        ctypes.windll.user32.ShowWindow(ablak, parancs)
+        return True
+    except Exception:
+        return False
 
 
 def venv_ut(gyoker=None):
@@ -398,12 +442,20 @@ def main(indit=True):
         return 0
     print("")
     print("Indul a grafikus felulet...")
+    sys.stdout.flush()
     sys.path.insert(0, ITT)
-    from torrentdl.gui import main as gui_main
     try:
-        return gui_main()
+        from torrentdl.gui import main as gui_main
     except Exception as hiba:
-        # Peldaul: nincs megjelenito (tavoli/szerver kornyezet).
+        print("")
+        print("[HIBA] Nem sikerult betolteni a feluletet: %s" % hiba)
+        return 1
+    # Innentol az ablak veszi at a szerepet; a konzol csak utban lenne.
+    konzol_lathatosag(False)
+    try:
+        kod = gui_main()
+    except Exception as hiba:
+        konzol_lathatosag(True)
         print("")
         print("[HIBA] Nem sikerult megnyitni az ablakot: %s" % hiba)
         if "init.tcl" in str(hiba) or "Tcl" in str(hiba):
@@ -419,6 +471,9 @@ def main(indit=True):
         print("       A parancssoros valtozat ilyenkor is mukodik:")
         print("       %s -m torrentdl status" % sys.executable)
         return 1
+    if kod:
+        konzol_lathatosag(True)
+    return kod
 
 
 if __name__ == "__main__":
