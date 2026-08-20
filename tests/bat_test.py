@@ -14,15 +14,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-fail = 0
+hibak = []
 
 
 def check(name, got, want):
-    global fail
     if got == want:
         print(f"ok    {name:<48} {got!r}")
     else:
-        fail = 1
+        hibak.append(name)
         print(f"HIBA  {name:<48} kapott={got!r}  vart={want!r}")
 
 
@@ -70,5 +69,5 @@ if attr.is_file():
         True,
     )
 
-print("\nA parancsfajl ellenorzese rendben." if not fail else "\nHIBA a parancsfajlban.")
-sys.exit(fail)
+print("\nA parancsfajl ellenorzese rendben." if not hibak else "\nHIBA a parancsfajlban.")
+sys.exit(1 if hibak else 0)

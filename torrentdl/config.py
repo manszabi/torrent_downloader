@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -86,10 +87,8 @@ def endpoint_path() -> Path:
 def write_endpoint(port: int, token: str) -> None:
     target = endpoint_path()
     write_json(target, {"host": "127.0.0.1", "port": int(port), "token": token})
-    try:
-        os.chmod(target, 0o600)
-    except OSError:  # pragma: no cover - egzotikus fájlrendszer
-        pass
+    with contextlib.suppress(OSError):  # pragma: no cover - egzotikus fájlrendszer
+        target.chmod(0o600)
 
 
 def read_endpoint():
@@ -103,20 +102,27 @@ def new_token() -> str:
     return secrets.token_hex(16)
 
 
-def write_atomic(target: Path, data: bytes) -> None:
-    """Atomi fájlírás, hogy összeomlás esetén se maradjon félkész állapotfájl."""
+def write_atomic(target: Path, data: bytes, durable: bool = True) -> None:
+    """Atomi fájlírás, hogy összeomlás esetén se maradjon félkész állapotfájl.
+
+    A `durable=False` a lemezre kényszerítést (fsync) hagyja el: a csere így is
+    atomi marad, csak áramszünetnél eshet vissza az előző tartalomra. Gyakran
+    frissülő, nem létfontosságú adatnál (pl. haladás kijelzése) ez a helyes
+    választás, mert az fsync minden alkalommal megvárja a lemezt.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=target.name + ".")
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
             fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, target)
+            if durable:
+                os.fsync(fh.fileno())
+        Path(tmp).replace(target)
         # A névcsere is elveszhet áramszünetnél, ha a könyvtár bejegyzése nem
         # került ki a lemezre. Windowson erre nincs mód, ott az os.replace
         # önmagában is atomi.
-        if os.name != "nt":
+        if durable and os.name != "nt":
             try:
                 konyvtar = os.open(str(target.parent), os.O_RDONLY)
             except OSError:
@@ -127,20 +133,20 @@ def write_atomic(target: Path, data: bytes) -> None:
                 finally:
                     os.close(konyvtar)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            Path(tmp).unlink()
         raise
 
 
-def write_json(target: Path, obj) -> None:
-    write_atomic(target, json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8"))
+def write_json(target: Path, obj, durable: bool = True) -> None:
+    write_atomic(
+        target, json.dumps(obj, indent=2, ensure_ascii=False).encode("utf-8"), durable=durable
+    )
 
 
 def read_json(target: Path, default=None):
     try:
-        with open(target, "rb") as fh:
+        with target.open("rb") as fh:
             return json.loads(fh.read().decode("utf-8"))
     except (OSError, ValueError):
         return default

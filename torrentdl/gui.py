@@ -18,6 +18,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import ClassVar
 
 from . import client
 from . import config as cfgmod
@@ -29,11 +30,12 @@ from .format import (
     parse_duration,
     state_label,
 )
+from .naplo import naplo_vege
 
 CIM = "Torrent letöltő"
-FRISSITES_MP = 1000  # ilyen sűrűn kérdezzük le az állapotot (ezredmásodperc)
+FRISSITES_MP = 1000  # ilyen sűrűn kérdezzük le az állapotot munka közben (ms)
+FRISSITES_TETLEN_MP = 3000  # ha nincs aktív munka, ennyi is elég
 UZENET_MP = 100  # ilyen sűrűn nézzük meg, üzent-e a háttérszál
-NAPLO_SOROK = 200
 
 
 def tcl_kornyezet(base: str | None = None, windows: bool | None = None) -> dict:
@@ -48,19 +50,18 @@ def tcl_kornyezet(base: str | None = None, windows: bool | None = None) -> dict:
         windows = os.name == "nt"
     if not windows or os.environ.get("TCL_LIBRARY"):
         return {}
-    alap = base if base is not None else getattr(sys, "base_prefix", sys.prefix)
-    gyoker = os.path.join(alap, "tcl")
-    if not os.path.isdir(gyoker):
+    alap = Path(base if base is not None else getattr(sys, "base_prefix", sys.prefix))
+    gyoker = alap / "tcl"
+    if not gyoker.is_dir():
         return {}
-    beallitva = {}
-    for nev in sorted(os.listdir(gyoker)):
-        teljes = os.path.join(gyoker, nev)
-        if not os.path.isdir(teljes):
+    beallitva: dict[str, str] = {}
+    for konyvtar in sorted(gyoker.iterdir()):
+        if not konyvtar.is_dir():
             continue
-        if nev.startswith("tcl8") and "TCL_LIBRARY" not in beallitva:
-            beallitva["TCL_LIBRARY"] = teljes
-        elif nev.startswith("tk8") and "TK_LIBRARY" not in beallitva:
-            beallitva["TK_LIBRARY"] = teljes
+        if konyvtar.name.startswith("tcl8") and "TCL_LIBRARY" not in beallitva:
+            beallitva["TCL_LIBRARY"] = str(konyvtar)
+        elif konyvtar.name.startswith("tk8") and "TK_LIBRARY" not in beallitva:
+            beallitva["TK_LIBRARY"] = str(konyvtar)
     os.environ.update(beallitva)
     return beallitva
 
@@ -100,19 +101,6 @@ def gomb_allapotok(status: dict) -> dict:
     }
 
 
-def naplo_vege(sorok: int = NAPLO_SOROK) -> str:
-    """A démon naplójának utolsó néhány sora."""
-    utvonal = cfgmod.home() / cfgmod.LOG_NAME
-    try:
-        with open(utvonal, "rb") as fh:
-            fh.seek(0, 2)
-            meret = fh.tell()
-            fh.seek(max(0, meret - 64 * 1024))
-            adat = fh.read()
-    except OSError:
-        return ""
-    szoveg = adat.decode("utf-8", "replace")
-    return "\n".join(szoveg.splitlines()[-sorok:])
 
 
 class App(tk.Tk):
@@ -257,7 +245,8 @@ class App(tk.Tk):
             self.lekerdezes_fut = True
             self._kuld(client.fetch_status, "status")
         if not azonnal:
-            self.after(FRISSITES_MP, self._allapot_frissites)
+            koz = FRISSITES_MP if self.utolso_allapot else FRISSITES_TETLEN_MP
+            self.after(koz, self._allapot_frissites)
 
     # ------------------------------------------------------------ kirajzolás
 
@@ -365,7 +354,9 @@ class App(tk.Tk):
         forras = self.forras_valtozo.get().strip()
         cel = self.cel_valtozo.get().strip()
         if not forras:
-            messagebox.showwarning(CIM, "Adj meg egy magnet linket vagy .torrent fájlt.", parent=self)
+            messagebox.showwarning(
+                CIM, "Adj meg egy magnet linket vagy .torrent fájlt.", parent=self
+            )
             return
         if not cel:
             messagebox.showwarning(CIM, "Válassz célmappát.", parent=self)
@@ -441,10 +432,10 @@ class App(tk.Tk):
 class IdoKerdes(tk.Toplevel):
     """Mennyi ideig szüneteljen a letöltés."""
 
-    def __init__(self, szulo: tk.Misc):
+    def __init__(self, szulo: tk.Tk | tk.Toplevel):
         super().__init__(szulo)
         self.title("Szüneteltetés")
-        self.masodperc = None
+        self.masodperc: float | None = None
         self.transient(szulo)
         self.resizable(False, False)
 
@@ -475,14 +466,14 @@ class IdoKerdes(tk.Toplevel):
 class Beallitasok(tk.Toplevel):
     """A démon beállításai (a mentés után újraindul a háttérdémon)."""
 
-    MEZOK = [
+    MEZOK: ClassVar[list[tuple[str, str]]] = [
         ("listen_port", "Bejövő port"),
         ("max_download_rate", "Letöltési korlát (kB/s, 0 = korlátlan)"),
         ("max_upload_rate", "Feltöltési korlát (kB/s, 0 = korlátlan)"),
         ("max_connections", "Kapcsolatok száma"),
         ("idle_timeout", "Tétlen démon leáll (mp, 0 = soha)"),
     ]
-    KAPCSOLOK = [
+    KAPCSOLOK: ClassVar[list[tuple[str, str]]] = [
         ("enable_dht", "DHT (tracker nélküli peer-keresés)"),
         ("enable_pex", "PEX (peer-csere)"),
         ("enable_lsd", "Helyi hálózati peer-keresés"),
@@ -490,7 +481,7 @@ class Beallitasok(tk.Toplevel):
         ("seed_after_complete", "Megosztás folytatása a letöltés után"),
     ]
 
-    def __init__(self, szulo: tk.Misc):
+    def __init__(self, szulo: tk.Tk | tk.Toplevel):
         super().__init__(szulo)
         self.title("Beállítások")
         self.transient(szulo)
@@ -500,7 +491,7 @@ class Beallitasok(tk.Toplevel):
 
         keret = ttk.Frame(self, padding=10)
         keret.grid(row=0, column=0, sticky="nsew")
-        self.valtozok = {}
+        self.valtozok: dict[str, tk.Variable] = {}
         sor = 0
         for kulcs, cimke in self.MEZOK:
             ttk.Label(keret, text=cimke).grid(row=sor, column=0, sticky="w", pady=2)
@@ -523,11 +514,11 @@ class Beallitasok(tk.Toplevel):
         sor += 1
 
         for kulcs, cimke in self.KAPCSOLOK:
-            valtozo = tk.BooleanVar(value=bool(self.cfg[kulcs]))
-            ttk.Checkbutton(keret, text=cimke, variable=valtozo).grid(
+            kapcsolo = tk.BooleanVar(value=bool(self.cfg[kulcs]))
+            ttk.Checkbutton(keret, text=cimke, variable=kapcsolo).grid(
                 row=sor, column=0, columnspan=2, sticky="w", pady=1
             )
-            self.valtozok[kulcs] = valtozo
+            self.valtozok[kulcs] = kapcsolo
             sor += 1
 
         ttk.Label(

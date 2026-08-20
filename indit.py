@@ -161,7 +161,7 @@ def masik_python(verziok=None):
     """
     tartalek = None
     for verzio in (KERESETT_VERZIOK if verziok is None else verziok):
-        ut = _kimenet(_jelolt_parancs(verzio) + ["-c", "import sys; print(sys.executable)"])
+        ut = _kimenet([*_jelolt_parancs(verzio), "-c", "import sys; print(sys.executable)"])
         if not ut or not os.path.isfile(ut):
             continue
         if os.path.abspath(ut) == os.path.abspath(sys.executable):
@@ -300,7 +300,7 @@ def _tartalek_telepites(parancs):
     if venvben_vagyunk():
         return False
     print("[..]   Ujraprobalom felhasznaloi modban...")
-    return _futtat(parancs[:4] + ["--user"] + parancs[4:])
+    return _futtat([*parancs[:4], "--user", *parancs[4:]])
 
 
 def csomagok_telepitese(utvonal):

@@ -169,7 +169,7 @@ def main() -> int:
     app.forras_valtozo.set(str(torrent))
     app.cel_valtozo.set(str(celmappa))
     app._inditas()
-    check("indítás után a mentett célmappa", 
+    check("indítás után a mentett célmappa",
           (cfgmod.read_json(cfgmod.path(cfgmod.GUI_NAME)) or {}).get("cel"), str(celmappa))
     var(app, lambda: client.ping() is not None, 40, "a háttérdémon elindulása")
     var(app, lambda: allapot() is not None or app.utolso_naplo, 40, "a letöltés megjelenése")

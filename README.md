@@ -191,15 +191,20 @@ végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
 
 ## Hogyan működik
 
-- A `torrentdl` parancsok egy háttérdémonnal beszélgetnek unix socketen keresztül;
-  a démon az első `add` / `resume` parancsra magától elindul.
+- A `torrentdl` parancsok és az ablak egy háttérdémonnal beszélgetnek: a démon a
+  hurokcímen (`127.0.0.1`) figyel egy szabad porton, a portot és a hozzá tartozó
+  jelszót a `daemon.endpoint` fájl tartalmazza (csak a felhasználó olvashatja).
+  Így a megoldás Windowson is működik, és más felhasználó nem vezérelheti a
+  letöltést. A démon az első `add` / `resume` parancsra magától elindul, és
+  egyszerre csak egy futhat belőle (fájlzár, ami összeomlás után magától
+  felszabadul).
 - Az adatkönyvtár alapból `~/.local/share/torrentdl` (felülírható a `TORRENTDL_HOME`
   környezeti változóval). Itt található:
   - `job.json` – az aktuális letöltés állapota (ezt olvassa a `status` akkor is, ha nem fut a démon)
   - `resume.dat` – a libtorrent folytatási adata (melyik darab van meg)
   - `current.torrent` – a torrent metaadatának másolata, hogy magnet link is folytatható legyen
   - `session.state` – DHT-node gyorsítótár, `last.json` – az utolsó befejezett letöltés
-  - `daemon.log` – napló
+  - `daemon.log` – napló, `daemon.lock` – egypéldány-zár, `daemon.endpoint` – port és jelszó
 - Amikor a letöltés eléri a 100%-ot, a program `force_recheck`-kel újraellenőrzi az összes
   darabot. Ha minden ép: a torrentet eltávolítja a session-ből, törli a munkaállományokat,
   és alapállapotba áll. Ha hibát talál, a hiányzó darabokat újratölti (legfeljebb kétszer,
@@ -217,19 +222,32 @@ végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
 | `torrentdl/cli.py` | a parancssori felület |
 | `torrentdl/engine.py` | a háttérdémon: libtorrent session, állapotgép, vezérlőcsatorna |
 | `torrentdl/client.py` | a démon indítása és vezérlése (ezt hívja a GUI és a CLI is) |
-| `torrentdl/config.py`, `format.py`, `lock.py`, `protocol.py` | beállítások, formázás, egypéldány-zár, protokoll |
+| `torrentdl/config.py`, `format.py`, `lock.py`, `naplo.py`, `protocol.py` | beállítások, formázás, egypéldány-zár, naplóolvasás, protokoll |
+| `ruff.toml`, `pyproject.toml` | a statikus elemzés és a típusellenőrzés beállításai |
 
 ## Tesztek
 
 Minden teszt hálózat nélkül fut:
 
 ```bash
-python3 tests/futtato.py        # mind egyben
+python3 tests/futtato.py        # mind egyben (a statikus elemzéssel együtt)
+```
+
+A futtató a tesztek mellett lefuttatja a **ruff** (hibaminták, stílus,
+teljesítmény) és a **mypy** (típusellenőrzés) ellenőrzést is, ha telepítve
+vannak:
+
+```bash
+pip install ruff mypy
+ruff check .        # külön is
+mypy torrentdl
 ```
 
 - `tests/smoke_test.py` – a letöltő motor: kész fájlok ellenőrzése és
   alapállapotba állás, szüneteltetés időzítéssel, `SIGKILL` utáni folytatás,
-  törlés a fájlokkal.
+  törlés a fájlokkal, megosztás újraindítás után, **sérült fájl felismerése és
+  újratöltése**, nem tiszta leállás utáni ellenőrzés, leválasztott meghajtó,
+  valamint a hibafelismerés és a session-statisztika egységtesztjei.
 - `tests/gui_test.py` – valódi Tk ablakkal: indítás, hibás forrás kezelése,
   gombok engedélyezése, szünet/folytatás, törlés (Linuxon `xvfb-run` kell hozzá,
   a futtató magától használja).
@@ -237,6 +255,22 @@ python3 tests/futtato.py        # mind egyben
   címkéi (ezeken szokott elcsúszni a `cmd.exe`).
 - `tests/indit_test.py` – az indító függőség-ellenőrzései, a `.venv` kezelése
   és a Python-verzió választása.
+
+## Erőforrás-használat
+
+A háttérdémon egyetlen torrentet kezel, és igyekszik keveset fogyasztani:
+
+- tétlenül ritkábban ébred (2 mp), munka közben sűrűbben (0,5 mp) – mérve
+  ~0,5% CPU egy letöltés alatt, peerek nélkül;
+- az állapotfájlt csak akkor írja újra, ha tényleg változott valami, és a
+  rendszeres haladás-mentésnél nem kényszeríti lemezre (`fsync`) – így egy
+  többórás letöltés sem terheli fölöslegesen az SSD-t;
+- a napló olvasása a felületen csak a fájl utolsó 64 kB-jából történik, és csak
+  akkor, ha a fájl változott;
+- a lemezoldali beállítások a libtorrent ajánlásait követik: külön szálak a
+  hash-számításhoz (gyorsabb ellenőrzés), nagyobb fájlgyorsítótár (sok fájlból
+  álló torrenthez és a Windows vírusirtójához), és megnyirbált peer-lista
+  (egyetlen torrenthez nem kell több ezer peer nyilvántartása).
 
 ## Jogi megjegyzés
 

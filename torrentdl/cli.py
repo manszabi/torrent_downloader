@@ -7,8 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import __version__
-from . import client
+from . import __version__, client
 from . import config as cfgmod
 from .format import (
     eta_seconds,
@@ -19,6 +18,7 @@ from .format import (
     progress_bar,
     state_label,
 )
+from .naplo import naplo_vege
 
 
 def duration_arg(text: str) -> float:
@@ -39,8 +39,7 @@ def render_status(data: dict) -> str:
         last = data.get("last")
         if last:
             lines.append(
-                "Utoljára befejezve: %s\n  helye: %s\n  mérete: %s, ellenőrizve: %s"
-                % (
+                "Utoljára befejezve: {}\n  helye: {}\n  mérete: {}, ellenőrizve: {}".format(
                     last.get("name"),
                     last.get("save_path"),
                     human_bytes(last.get("total_bytes", 0)),
@@ -60,8 +59,7 @@ def render_status(data: dict) -> str:
         f"Méret:    {human_bytes(job.get('downloaded'))} / {human_bytes(job.get('total_bytes'))}"
     )
     lines.append(
-        "Sebesség: le %s | fel %s | peerek: %s (seed: %s) | DHT node: %s"
-        % (
+        "Sebesség: le {} | fel {} | peerek: {} (seed: {}) | DHT node: {}".format(
             human_rate(job.get("download_rate")),
             human_rate(job.get("upload_rate")),
             job.get("peers", 0),
@@ -79,7 +77,7 @@ def render_status(data: dict) -> str:
     lines.append(f"Cél:      {job.get('save_path')}")
     if job.get("repaired_bytes"):
         lines.append(
-            "Javítás:  %s hiányzó/sérült adat újratöltése" % human_bytes(job["repaired_bytes"])
+            f"Javítás:  {human_bytes(job['repaired_bytes'])} hiányzó/sérült adat újratöltése"
         )
     if job.get("hash_errors"):
         lines.append(f"Hibás darabok (újratöltve): {job['hash_errors']}")
@@ -98,7 +96,7 @@ def call(command: str, **payload):
     try:
         return client.call(command, **payload)
     except client.DaemonError as exc:
-        raise SystemExit(f"Hiba: {exc}")
+        raise SystemExit(f"Hiba: {exc}") from exc
 
 
 # ------------------------------------------------------------------ parancsok
@@ -108,12 +106,12 @@ def cmd_add(args) -> int:
     try:
         payload = client.load_source(args.source)
     except client.SourceError as exc:
-        raise SystemExit(f"Hiba: {exc}")
+        raise SystemExit(f"Hiba: {exc}") from exc
     save_path = Path(args.dest).expanduser().resolve()
     try:
         save_path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise SystemExit(f"Hiba: nem hozható létre a célkönyvtár: {exc}")
+        raise SystemExit(f"Hiba: nem hozható létre a célkönyvtár: {exc}") from exc
     data = call("add", save_path=str(save_path), paused=args.paused, **payload)
     print("Letöltés hozzáadva.\n")
     print(render_status(data))
@@ -166,8 +164,8 @@ def cmd_cancel(args) -> int:
     # A törlést a libtorrent végzi, ezért ehhez is a démon kell.
     data = call("cancel", delete_files=args.delete_files)
     print(
-        "Törölve: %s%s"
-        % (data["cancelled"], " (a fájlokkal együtt)" if data["files_deleted"] else "")
+        f"Törölve: {data['cancelled']}"
+        + (" (a fájlokkal együtt)" if data["files_deleted"] else "")
     )
     if data.get("warning"):
         print(f"Figyelmeztetés: {data['warning']}")
@@ -175,51 +173,69 @@ def cmd_cancel(args) -> int:
 
 
 def cmd_gui(args) -> int:
-    from .gui import main as gui_main
+    # Az ablakot csak akkor húzzuk be, ha tényleg kell (tkinter nélkül is fusson
+    # a parancssoros rész).
+    from .gui import main as gui_main  # noqa: PLC0415
 
     return gui_main()
 
 
-def cmd_daemon(args) -> int:
-    if args.action == "run":
-        from .engine import Daemon
+def _daemon_run(args) -> int:
+    # Csak itt importáljuk: a motor behúzza a libtorrentet, ami lassú indulás.
+    from .engine import Daemon  # noqa: PLC0415
 
-        return Daemon(foreground=args.foreground).run()
-    if args.action == "start":
-        if client.ping():
-            print("A démon már fut.")
-            return 0
-        try:
-            client.ensure_daemon()
-        except client.DaemonError as exc:
-            raise SystemExit(f"Hiba: {exc}")
-        print("Démon elindítva.")
+    return Daemon(foreground=args.foreground).run()
+
+
+def _daemon_start(args) -> int:
+    if client.ping():
+        print("A démon már fut.")
         return 0
-    if args.action == "stop":
-        if not client.ping():
-            print("A démon nem fut.")
-            return 0
-        if client.stop_daemon():
-            print("Démon leállítva.")
-            return 0
-        print("A démon nem állt le időben.")
-        return 1
-    if args.action == "status":
-        info = client.ping()
-        if info:
-            print(f"Fut (pid={info['pid']}, libtorrent {info['version']})")
-            return 0
+    try:
+        client.ensure_daemon()
+    except client.DaemonError as exc:
+        raise SystemExit(f"Hiba: {exc}") from exc
+    print("Démon elindítva.")
+    return 0
+
+
+def _daemon_stop(args) -> int:
+    if not client.ping():
+        print("A démon nem fut.")
+        return 0
+    if client.stop_daemon():
+        print("Démon leállítva.")
+        return 0
+    print("A démon nem állt le időben.")
+    return 1
+
+
+def _daemon_status(args) -> int:
+    info = client.ping()
+    if not info:
         print("Nem fut.")
         return 1
-    if args.action == "log":
-        logfile = cfgmod.home() / cfgmod.LOG_NAME
-        if not logfile.exists():
-            print("Nincs naplófájl.")
-            return 0
-        lines = logfile.read_text(encoding="utf-8", errors="replace").splitlines()
-        print("\n".join(lines[-args.lines :]))
-        return 0
-    return 1
+    print(f"Fut (pid={info['pid']}, libtorrent {info['version']})")
+    return 0
+
+
+def _daemon_log(args) -> int:
+    szoveg = naplo_vege(args.lines)
+    print(szoveg if szoveg else "Nincs naplófájl.")
+    return 0
+
+
+DAEMON_PARANCSOK = {
+    "run": _daemon_run,
+    "start": _daemon_start,
+    "stop": _daemon_stop,
+    "status": _daemon_status,
+    "log": _daemon_log,
+}
+
+
+def cmd_daemon(args) -> int:
+    return DAEMON_PARANCSOK[args.action](args)
 
 
 def cmd_config(args) -> int:
@@ -232,13 +248,13 @@ def cmd_config(args) -> int:
             key = key.strip()
             if key not in cfgmod.DEFAULT_CONFIG:
                 raise SystemExit(
-                    "Ismeretlen beállítás: %s (lehetséges: %s)"
-                    % (key, ", ".join(sorted(cfgmod.DEFAULT_CONFIG)))
+                    f"Ismeretlen beállítás: {key} "
+                    f"(lehetséges: {', '.join(sorted(cfgmod.DEFAULT_CONFIG))})"
                 )
             try:
                 cfg[key] = cfgmod.coerce(key, raw)
             except ValueError as exc:
-                raise SystemExit(f"Hibás érték: {exc}")
+                raise SystemExit(f"Hibás érték: {exc}") from exc
         cfgmod.save_config(cfg)
         print("Beállítások mentve. Újraindítás után lépnek életbe: torrentdl daemon stop\n")
     width = max(len(k) for k in cfg)

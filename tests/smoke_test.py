@@ -38,6 +38,7 @@ def run(home: Path, *args, check=True):
         capture_output=True,
         text=True,
         timeout=90,
+        check=False,  # a hibát mi magunk értékeljük ki
     )
     if check and proc.returncode != 0:
         raise AssertionError(f"'{' '.join(args)}' hibára futott:\n{proc.stdout}\n{proc.stderr}")
@@ -119,11 +120,45 @@ def test_hibafelismeres():
     assert not engine._hely_hiba(HamisAlert(0, "file not found"))
 
 
+def test_session_statisztika():
+    """A DHT-számláló kiolvasása a session statisztikából.
+
+    A régi session.status() elavult; helyette a post_session_stats() +
+    session_stats_alert utat használjuk. Ez a teszt azt őrzi, hogy a metrika
+    neve és a mezők elérése a telepített libtorrenttel is működik (egy
+    verzióváltás különben csendben nullázná a kijelzett DHT-node számot).
+    """
+    from torrentdl import engine
+
+    assert engine.DHT_NODES_INDEX >= 0, "nincs meg a dht.dht_nodes metrika"
+    ses = lt.session(
+        {
+            "alert_mask": lt.alert_category.stats,
+            "enable_dht": False,
+            "listen_interfaces": "127.0.0.1:0",
+        }
+    )
+    try:
+        ses.post_session_stats()
+        hatarido = time.time() + 10
+        while time.time() < hatarido:
+            for alert in ses.pop_alerts():
+                if isinstance(alert, lt.session_stats_alert):
+                    ertek = engine.dht_nodes_ertek(alert)
+                    assert isinstance(ertek, int) and ertek >= 0, ertek
+                    return
+            time.sleep(0.05)
+        raise AssertionError("nem érkezett session_stats_alert")
+    finally:
+        del ses
+
+
 def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="torrentdl-test-"))
     home = work / "home"
     home.mkdir()
     check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
+    check("session statisztika (DHT-számláló)", test_session_statisztika)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
@@ -225,7 +260,8 @@ def main() -> int:
 
         # A démon leállítása és újraindítása után is megy tovább a megosztás.
         run(home, "daemon", "stop")
-        assert (status(home)["job"] or {}).get("state") == "seeding", "a megosztás állapota elveszett"
+        allapot = (status(home)["job"] or {}).get("state")
+        assert allapot == "seeding", "a megosztás állapota elveszett"
         run(home, "daemon", "start")
         out = run(home, "status").stdout
         assert "megosztás" in out, out
@@ -359,7 +395,8 @@ def main() -> int:
         (work / "cel-kulso-elrejtve").rename(dest)
         run(home, "resume")
         wait_for(
-            lambda: (status(home)["job"] or {}).get("state") in ("seeding", "verifying", "downloading"),
+            lambda: (status(home)["job"] or {}).get("state")
+            in ("seeding", "verifying", "downloading"),
             timeout=60,
             what="folytatás a meghajtó visszacsatlakoztatása után",
         )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 DURATION_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[smhd]?)", re.IGNORECASE)
 UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}
@@ -67,7 +68,7 @@ def human_time(seconds) -> str:
 
 def progress_bar(fraction: float, width: int = 30) -> str:
     fraction = max(0.0, min(1.0, float(fraction or 0)))
-    filled = int(round(fraction * width))
+    filled = round(fraction * width)
     return "[" + "#" * filled + "-" * (width - filled) + "]"
 
 
@@ -83,8 +84,6 @@ def eta_seconds(job: dict):
 
 def state_label(job: dict) -> str:
     """Az állapot rövid, magyar leírása (a szünet hátralévő idejével együtt)."""
-    import time
-
     state = job.get("state", "?")
     label = STATE_LABELS.get(state, state)
     if state == "seeding":
