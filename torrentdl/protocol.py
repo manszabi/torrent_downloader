@@ -12,7 +12,7 @@ import json
 import socket
 
 ENCODING = "utf-8"
-MAX_MESSAGE = 8 * 1024 * 1024  # egy .torrent tartalma is átmegy rajta
+MAX_MESSAGE = 16 * 1024 * 1024  # egy .torrent tartalma is bőven átmegy rajta
 
 
 class DaemonError(RuntimeError):

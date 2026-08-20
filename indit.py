@@ -161,7 +161,7 @@ def masik_python(verziok=None):
     """
     tartalek = None
     for verzio in (KERESETT_VERZIOK if verziok is None else verziok):
-        ut = _kimenet(_jelolt_parancs(verzio) + ["-c", "import sys; print(sys.executable)"])
+        ut = _kimenet([*_jelolt_parancs(verzio), "-c", "import sys; print(sys.executable)"])
         if not ut or not os.path.isfile(ut):
             continue
         if os.path.abspath(ut) == os.path.abspath(sys.executable):
@@ -300,7 +300,7 @@ def _tartalek_telepites(parancs):
     if venvben_vagyunk():
         return False
     print("[..]   Ujraprobalom felhasznaloi modban...")
-    return _futtat(parancs[:4] + ["--user"] + parancs[4:])
+    return _futtat([*parancs[:4], "--user", *parancs[4:]])
 
 
 def csomagok_telepitese(utvonal):
@@ -406,6 +406,16 @@ def main(indit=True):
         # Peldaul: nincs megjelenito (tavoli/szerver kornyezet).
         print("")
         print("[HIBA] Nem sikerult megnyitni az ablakot: %s" % hiba)
+        if "init.tcl" in str(hiba) or "Tcl" in str(hiba):
+            print("")
+            print("       Ez a Tcl/Tk (a tkinter grafikus resze) megtalalasan mult.")
+            print("       Probald ki virtualis kornyezet nelkul:")
+            if os.name == "nt":
+                print("       set TORRENTDL_NINCS_VENV=1 && %s indit.py"
+                      % os.path.basename(sys.executable))
+            else:
+                print("       TORRENTDL_NINCS_VENV=1 python3 indit.py")
+        print("")
         print("       A parancssoros valtozat ilyenkor is mukodik:")
         print("       %s -m torrentdl status" % sys.executable)
         return 1

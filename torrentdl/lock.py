@@ -6,9 +6,11 @@ után magától felszabadul – nem marad hátra „ragadt" zárfájl.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
+from typing import IO
 
 if sys.platform == "win32":  # pragma: no cover - Windowson fut
     import msvcrt
@@ -21,11 +23,13 @@ class SingleInstanceLock:
 
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.handle = None
+        self.handle: IO[str] | None = None
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(self.path, "a+")
+        # A fájlt szándékosan nyitva tartjuk: a zárolás addig él, amíg a
+        # leíró nyitva van (ezért nincs "with" blokk).
+        handle = self.path.open("a+")
         try:
             if sys.platform == "win32":  # pragma: no cover - Windowson fut
                 handle.seek(0)
@@ -40,6 +44,8 @@ class SingleInstanceLock:
         return True
 
     def _write_pid(self) -> None:
+        if self.handle is None:  # pragma: no cover - csak zár után hívjuk
+            return
         # Windowson a zárolt első bájt nem írható felül, ezért utána írunk.
         offset = 1 if sys.platform == "win32" else 0
         self.handle.seek(offset)
@@ -60,7 +66,5 @@ class SingleInstanceLock:
             pass
         self.handle.close()
         self.handle = None
-        try:
+        with contextlib.suppress(OSError):
             self.path.unlink()
-        except OSError:
-            pass

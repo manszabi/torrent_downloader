@@ -9,15 +9,14 @@ sys.path.insert(0, str(REPO))
 
 import indit  # noqa: E402
 
-fail = 0
+hibak = []
 
 
 def check(name, got, want):
-    global fail
     if got == want:
         print(f"ok    {name:<48} {got!r}")
     else:
-        fail = 1
+        hibak.append(name)
         print(f"HIBA  {name:<48} kapott={got!r}  vart={want!r}")
 
 
@@ -63,7 +62,8 @@ else:
 indit.csomagok_telepitese = eredeti_telepites
 
 # --- Virtualis kornyezet (.venv) ---------------------------------------
-varhato_veg = os.path.join("Scripts", "python.exe") if os.name == "nt" else os.path.join("bin", "python")
+varhato_veg = (os.path.join("Scripts", "python.exe") if os.name == "nt"
+               else os.path.join("bin", "python"))
 check("a venv Python utja a szokasos helyen van",
       indit.venv_python("/x").endswith(os.path.join(".venv", varhato_veg)), True)
 check("kivulrol nezve nem a venv-ben vagyunk", indit.venvben_vagyunk("/x"), False)
@@ -85,8 +85,8 @@ with tempfile.TemporaryDirectory() as gyoker:
         # .venv/bin/python csak hivatkozas a rendszer Pythonjara, ezert ezt
         # kulon ellenorizzuk.)
         check("a rendszer Pythonja nincs a venv-ben", indit.venvben_vagyunk(gyoker), False)
-        kod = ("import sys; sys.path.insert(0, %r); import indit; "
-               "print(indit.venvben_vagyunk(%r))" % (str(REPO), gyoker))
+        kod = (f"import sys; sys.path.insert(0, {str(REPO)!r}); import indit; "
+               f"print(indit.venvben_vagyunk({gyoker!r}))")
         kimenet = indit._kimenet([ut, "-c", kod])
         check("a venv Pythonja mar a venv-ben van", kimenet.splitlines()[-1:], ["True"])
         # Masodik hivas: nem keszit ujat, a meglevot adja vissza.
@@ -117,5 +117,5 @@ if indit.hianyzo_modulok(["tkinter"]):
 else:
     check("teljes ellenorzes lefut", indit.main(indit=False), 0)
 
-print("\nAz indito tesztjei rendben." if not fail else "\nHIBA az inditoban.")
-sys.exit(fail)
+print("\nAz indito tesztjei rendben." if not hibak else "\nHIBA az inditoban.")
+sys.exit(1 if hibak else 0)

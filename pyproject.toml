@@ -19,3 +19,15 @@ torrentdl-gui = "torrentdl.gui:main"
 
 [tool.setuptools]
 packages = ["torrentdl"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true          # a libtorrenthez nincs típusleírás
+warn_unused_ignores = true
+# A démon állapotát (job, handle) minden belépési pont ellenőrzi futásidőben,
+# de ezt a mypy nem tudja metódushatárokon átvinni; a maradék jelzés zaj lenne.
+disable_error_code = ["union-attr", "index"]
+
+[[tool.mypy.overrides]]
+module = "indit"
+ignore_errors = true                   # szándékosan régi nyelvtanú indító

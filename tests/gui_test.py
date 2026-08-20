@@ -28,7 +28,7 @@ import libtorrent as lt  # noqa: E402
 from torrentdl import client  # noqa: E402
 from torrentdl import config as cfgmod  # noqa: E402
 from torrentdl.format import human_bytes, human_time  # noqa: E402
-from torrentdl.gui import App, gomb_allapotok  # noqa: E402
+from torrentdl.gui import App, gomb_allapotok, tcl_kornyezet  # noqa: E402
 
 HIBAK = []
 
@@ -90,6 +90,47 @@ def main() -> int:
         gomb_allapotok({"job": {"state": "paused"}})["folytat"],
         True,
     )
+    check(
+        "megosztás közben indítható új letöltés",
+        gomb_allapotok({"job": {"state": "seeding"}})["indit"],
+        True,
+    )
+    check(
+        "ellenőrzés gomb megosztás közben is aktív",
+        gomb_allapotok({"job": {"state": "seeding"}})["ellenoriz"],
+        True,
+    )
+    check(
+        "ellenőrzés gomb munka nélkül inaktív",
+        gomb_allapotok({"job": None})["ellenoriz"],
+        False,
+    )
+
+    # Windowson a .venv-ből induló Python nem találja magától a Tcl/Tk-t.
+    with tempfile.TemporaryDirectory() as alap:
+        os.makedirs(os.path.join(alap, "tcl", "tcl8.6"))
+        os.makedirs(os.path.join(alap, "tcl", "tk8.6"))
+        regi = {k: os.environ.pop(k, None) for k in ("TCL_LIBRARY", "TK_LIBRARY")}
+        try:
+            check(
+                "Windowson beállítja a Tcl/Tk könyvtárat",
+                tcl_kornyezet(base=alap, windows=True),
+                {
+                    "TCL_LIBRARY": os.path.join(alap, "tcl", "tcl8.6"),
+                    "TK_LIBRARY": os.path.join(alap, "tcl", "tk8.6"),
+                },
+            )
+            os.environ.pop("TCL_LIBRARY", None)
+            os.environ.pop("TK_LIBRARY", None)
+            check("máshol nem nyúl hozzá", tcl_kornyezet(base=alap, windows=False), {})
+            os.environ["TCL_LIBRARY"] = "/mar/be/van/allitva"
+            check("meglévő beállítást nem ír felül", tcl_kornyezet(base=alap, windows=True), {})
+        finally:
+            for kulcs, ertek in regi.items():
+                os.environ.pop(kulcs, None)
+                if ertek is not None:
+                    os.environ[kulcs] = ertek
+
     check("méret formázás", human_bytes(1536), "1.50 KiB")
     check("idő formázás", human_time(3725), "1ó 2p")
 
@@ -128,7 +169,7 @@ def main() -> int:
     app.forras_valtozo.set(str(torrent))
     app.cel_valtozo.set(str(celmappa))
     app._inditas()
-    check("indítás után a mentett célmappa", 
+    check("indítás után a mentett célmappa",
           (cfgmod.read_json(cfgmod.path(cfgmod.GUI_NAME)) or {}).get("cel"), str(celmappa))
     var(app, lambda: client.ping() is not None, 40, "a háttérdémon elindulása")
     var(app, lambda: allapot() is not None or app.utolso_naplo, 40, "a letöltés megjelenése")

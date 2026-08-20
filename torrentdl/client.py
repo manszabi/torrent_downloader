@@ -5,6 +5,8 @@ Ezt használja a parancssori felület és a grafikus felület is.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import os
 import subprocess
 import sys
@@ -32,21 +34,29 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
     if ping():
         return True
     cmd = [python_executable(), "-m", "torrentdl", "daemon", "run"]
-    kwargs = {}
-    if sys.platform == "win32":  # pragma: no cover - Windowson fut
-        # Ne villanjon fel konzolablak, és éljen túl a szülő bezárását.
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
-        )
-    else:
-        kwargs["start_new_session"] = True
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(Path(__file__).resolve().parent.parent), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
-    with open(os.devnull, "wb") as devnull:
+    # A démon a saját naplójába ír, a csatornái ezért mehetnek a semmibe.
+    if sys.platform == "win32":  # pragma: no cover - Windowson fut
+        # Ne villanjon fel konzolablak, és élje túl a szülő bezárását.
         subprocess.Popen(
-            cmd, stdin=devnull, stdout=devnull, stderr=devnull, env=env, **kwargs
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+        )
+    else:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
         )
     deadline = time.time() + wait
     while time.time() < deadline:
@@ -90,10 +100,8 @@ def stop_daemon(wait: float = 20.0) -> bool:
     """Leállítja a démont. Igaz, ha (már) nem fut."""
     if not ping():
         return True
-    try:
+    with contextlib.suppress(DaemonError):
         request(cfgmod.read_endpoint(), "shutdown")
-    except DaemonError:
-        pass
     deadline = time.time() + wait
     while time.time() < deadline:
         if not ping(timeout=1.0):
@@ -137,7 +145,8 @@ def load_source(source: str) -> dict:
 
     if source.startswith(("http://", "https://")):
         try:
-            with urllib.request.urlopen(source, timeout=30) as response:
+            # A séma fentebb ellenőrizve (csak http/https), ezért biztonságos.
+            with urllib.request.urlopen(source, timeout=30) as response:  # noqa: S310
                 data = response.read()
         except OSError as exc:
             raise SourceError(f"nem sikerült letölteni a .torrent fájlt: {exc}") from exc
@@ -146,7 +155,7 @@ def load_source(source: str) -> dict:
         return {
             "source": source,
             "source_type": "file",
-            "torrent_data": data.hex(),
+            "torrent_b64": base64.b64encode(data).decode("ascii"),
             "name": torrent_name(data),
         }
 
@@ -159,14 +168,17 @@ def load_source(source: str) -> dict:
     return {
         "source": str(path.resolve()),
         "source_type": "file",
-        "torrent_data": data.hex(),
+        # base64: a hexnél másfélszer tömörebb, így a nagy .torrent fájlok is
+        # gyorsabban jutnak át a vezérlőcsatornán.
+        "torrent_b64": base64.b64encode(data).decode("ascii"),
         "name": torrent_name(data),
     }
 
 
 def torrent_name(data: bytes) -> str:
     try:
-        import libtorrent as lt
+        # Csak a név kiírásához kell; a parancssor enélkül is működik.
+        import libtorrent as lt  # noqa: PLC0415
 
         return lt.torrent_info(lt.bdecode(data)).name()
     except Exception:

@@ -1,0 +1,38 @@
+# Statikus ellenőrzés: futtatás a projekt gyökeréből "ruff check ." paranccsal.
+target-version = "py310"
+line-length = 100
+exclude = [".venv", "__pycache__"]
+
+[lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorrend
+    "UP",        # elavult nyelvi elemek (pyupgrade)
+    "B",         # gyakori hibaminták (bugbear)
+    "C4",        # felesleges list/dict/set építések
+    "SIM",       # egyszerűsíthető szerkezetek
+    "RET",       # return-ágak
+    "PTH",       # os.path helyett pathlib
+    "PERF",      # teljesítmény
+    "RUF",       # ruff saját szabályai
+    "S",         # biztonsági minták (bandit)
+    "A",         # beépített nevek árnyékolása
+    "PL",        # pylint-részhalmaz
+]
+ignore = [
+    "PLR0912", "PLR0913", "PLR0915",  # ág-/paraméterszám: a motor állapotgépe így olvasható
+    "PLR2004",                        # "mágikus" számok a formázásban
+    "S603", "S607",                   # subprocess: szándékos, fix parancsokkal
+    "RUF001", "RUF002", "RUF003",     # magyar szöveg: a gondolatjel és társai szándékosak
+]
+
+[lint.per-file-ignores]
+# Az indító szándékosan régi nyelvtannal készült (régi Python is olvassa),
+# és os.path-ot használ, mert a pathlib importja is elszállhat egy csonka
+# telepítésen.
+# Az indító szándékosan egyszerű, régi nyelvtanú, és sok kis ellenőrző ága van.
+"indit.py" = ["UP", "PTH", "SIM", "RET", "PLW", "B", "PERF203", "PLR0911", "PLC0415"]
+# A tesztekben az assert, az os.path és a késleltetett import (a környezet
+# beállítása utáni betöltés miatt) szándékos.
+"tests/*" = ["S101", "PTH", "S311", "PLC0415"]
