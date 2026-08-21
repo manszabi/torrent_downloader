@@ -37,10 +37,17 @@ a vezérlést az `indit.py`-nak, ami:
 
 Amint megnyílik az ablak, a fekete konzolablak eltűnik (hiba esetén visszajön
 az üzenettel együtt), majd a felület véglegesen le is válik róla – így a
-Windows később sem tudja visszahozni a program ablaka elé. A háttérdémon
-ráadásul konzol nélküli, leválasztott folyamatként indul (`pythonw.exe` +
-`DETACHED_PROCESS`), ezért az újraindítása – például beállítás mentésekor –
-sem villant fel semmit.
+Windows később sem tudja visszahozni a program ablaka elé.
+
+A háttérdémon konzol nélküli, leválasztott folyamatként indul. Ehhez a program
+**az alaptelepítés valódi `pythonw.exe`-jét** keresi meg, és nem a `.venv`
+mappában lévőt: az ugyanis csak egy átirányító, ami a Python 3.13.0-ig a
+*konzolos* `python.exe`-t indította el helyette ([CPython
+gh-126084](https://github.com/python/cpython/issues/126084), javítva a
+3.13.1-ben). Emiatt nyílt a démonhoz egy konzolablak, ami a felület elé
+ugrott – például minden beállítás-mentés után, amikor a démon újraindul –, és
+a felület bezárása után is ott maradt. A `.venv` csomagjait (a libtorrentet) a
+`PYTHONPATH` adja át az alaptelepítés Pythonjának.
 
 Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le. A `.venv`
 mappa bármikor törölhető: a következő indításkor újra elkészül. Ha nem kéred a
@@ -87,7 +94,9 @@ parancssori rész tkinter nélkül is működik.
   kapcsolatszám, a titkosítás módja és a DHT/PEX/LSD/µTP; mentés után a démon
   újraindul, a letöltés pedig ott folytatódik, ahol tartott.
 - Az ablak bezárása **nem** szakítja meg a letöltést: a háttérdémon tovább
-  dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés.
+  dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés. Ha nincs
+  aktív letöltés, a bezárással a háttérdémon is kilép (nem várja meg a
+  tétlenségi idő leteltét).
 
 ## Használat parancssorból
 
