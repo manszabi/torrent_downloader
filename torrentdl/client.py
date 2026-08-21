@@ -19,6 +19,7 @@ from typing import Any, cast
 
 from . import config as cfgmod
 from .format import human_bytes as _meret
+from .lock import tartja_meg_valaki
 from .protocol import DaemonError, NotRunning, request
 
 # Egy .torrent fájl a gyakorlatban néhány száz kilobájt. A felső határ azért
@@ -89,6 +90,14 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
     """Elindítja a démont a háttérben, és megvárja, amíg válaszol."""
     if ping():
         return True
+    deadline = time.time() + wait
+    # Egy előző démon lehet, hogy még leáll: a vezérlőcsatornáját már bezárta
+    # (nem válaszol pingre), a zárat viszont csak a mentések végén engedi el.
+    # Amíg tartja, az új példány rögtön kilépne – ezért megvárjuk.
+    while tartja_meg_valaki(cfgmod.path(cfgmod.PID_NAME)) and time.time() < deadline:
+        time.sleep(0.25)
+        if ping():
+            return True
     cmd = [python_executable(), "-m", "torrentdl", "daemon", "run"]
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -115,7 +124,6 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
             env=env,
             start_new_session=True,
         )
-    deadline = time.time() + wait
     while time.time() < deadline:
         if ping(timeout=1.0):
             return True
@@ -148,7 +156,10 @@ def stop_daemon(wait: float = 20.0) -> bool:
         request(cfgmod.read_endpoint(), "shutdown")
     deadline = time.time() + wait
     while time.time() < deadline:
-        if not ping(timeout=1.0):
+        # A ping elnémulása még nem jelenti, hogy a démon el is engedte a
+        # zárat: a mentések utána következnek. Egy azonnal induló új példány
+        # ilyenkor kilépne, ezért a folyamat tényleges kilépését várjuk meg.
+        if not ping(timeout=1.0) and not tartja_meg_valaki(cfgmod.path(cfgmod.PID_NAME)):
             return True
         time.sleep(0.25)
     return False

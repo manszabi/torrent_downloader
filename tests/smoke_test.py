@@ -46,8 +46,20 @@ def run(home: Path, *args, check=True):
         check=False,  # a hibát mi magunk értékeljük ki
     )
     if check and proc.returncode != 0:
-        raise AssertionError(f"'{' '.join(args)}' hibára futott:\n{proc.stdout}\n{proc.stderr}")
+        raise AssertionError(
+            f"'{' '.join(args)}' hibára futott:\n{proc.stdout}\n{proc.stderr}"
+            + naplo_reszlet(home)
+        )
     return proc
+
+
+def naplo_reszlet(home: Path, sorok: int = 25) -> str:
+    """A démon naplójának vége – e nélkül egy indulási hiba okát nem látni."""
+    naplo = home / "daemon.log"
+    if not naplo.is_file():
+        return "\n(nincs démonnapló)"
+    vege = naplo.read_text(encoding="utf-8", errors="replace").splitlines()[-sorok:]
+    return "\n--- a démon naplójának vége ---\n" + "\n".join(vege)
 
 
 def make_torrent(source_dir: Path, out: Path) -> Path:
@@ -205,6 +217,35 @@ def test_forras_meret_hatar():
         shutil.rmtree(munka, ignore_errors=True)
 
 
+def test_zar_eszlelese():
+    """A leálló démon zárát észre kell venni, különben az újraindítás elbukik.
+
+    A démon a vezérlőcsatornát a mentések ELŐTT zárja be, a zárat viszont csak
+    utánuk engedi el. Ha a leállítás csak a pingig vár, egy azonnal induló új
+    példány a zárba ütközik és rögtön kilép ("nem sikerült elindítani a
+    háttérdémont"). Ezt a köztes állapotot kell látnia a programnak.
+    """
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-zar-"))
+    try:
+        zarfajl = munka / "daemon.lock"
+        assert not lock_modul.tartja_meg_valaki(zarfajl), "zárfájl nélkül nincs mit tartani"
+
+        zar = lock_modul.SingleInstanceLock(zarfajl)
+        assert zar.acquire(), "a zárat meg kellett volna kapni"
+        assert lock_modul.read_pid(zarfajl) == os.getpid()
+        assert lock_modul.tartja_meg_valaki(zarfajl), "a tartott zárat észre kell venni"
+        zar.release()
+        assert not lock_modul.tartja_meg_valaki(zarfajl), "elengedés után szabad a zár"
+
+        # Összeomlás után ottmaradt zárfájl: a folyamat már nem él.
+        halott = munka / "halott.lock"
+        halott.write_text("999999999\n")
+        assert not lock_modul.pid_alive(999_999_999)
+        assert not lock_modul.tartja_meg_valaki(halott), "a hátrahagyott zárfájl ne blokkoljon"
+    finally:
+        shutil.rmtree(munka, ignore_errors=True)
+
+
 def test_szunet_ellenorzes_kozben():
     """Ellenőrzés közben megnyomott Szünet: a szünetnek meg kell maradnia.
 
@@ -321,6 +362,7 @@ def main() -> int:
     check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
     check("szüneteltetés ellenőrzés közben", test_szunet_ellenorzes_kozben)
     check("forrás méretkorlátja", test_forras_meret_hatar)
+    check("egypéldány-zár észlelése", test_zar_eszlelese)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
@@ -376,7 +418,7 @@ def main() -> int:
         pid = lock_modul.read_pid(home / "daemon.lock")
         assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
-        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
+        wait_for(lambda: not lock_modul.pid_alive(pid), timeout=20, what="a démon leállása")
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
         assert "megszakadt" in text, text
@@ -501,7 +543,7 @@ def main() -> int:
         pid = lock_modul.read_pid(home / "daemon.lock")
         assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
-        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
+        wait_for(lambda: not lock_modul.pid_alive(pid), timeout=20, what="a démon leállása")
 
         # Amíg a program áll, "elromlik" a lemezen az adat.
         fajl = romlas["fajl"]
@@ -588,35 +630,6 @@ def kegyetlen_leallitas(pid: int) -> None:
     lekezelhetetlen leállás, tehát pontosan ezt a helyzetet állítja elő.
     """
     os.kill(pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
-
-
-def pid_alive(pid: int) -> bool:
-    """Él-e még a folyamat? (Csak kérdez, nem nyúl hozzá.)"""
-    if os.name == "nt":
-        # Windowson az os.kill nem kérdez, hanem LELŐ: a 0-s "jelzés" is
-        # TerminateProcess-szé válik. Ezért itt a folyamat leírójából
-        # olvassuk ki, hogy fut-e még.
-        import ctypes
-
-        SYNCHRONIZE = 0x0010_0000
-        STILL_ACTIVE = 259
-        kernel = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        # A PROCESS_QUERY_LIMITED_INFORMATION kell a kilépési kódhoz.
-        leiro = kernel.OpenProcess(SYNCHRONIZE | 0x1000, False, pid)
-        if not leiro:
-            return False
-        try:
-            kod = ctypes.c_ulong()
-            if not kernel.GetExitCodeProcess(leiro, ctypes.byref(kod)):
-                return False
-            return kod.value == STILL_ACTIVE
-        finally:
-            kernel.CloseHandle(leiro)
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 if __name__ == "__main__":
