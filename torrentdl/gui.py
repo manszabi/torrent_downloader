@@ -16,6 +16,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import ClassVar
@@ -36,6 +37,11 @@ CIM = "Torrent letöltő"
 FRISSITES_MP = 1000  # ilyen sűrűn kérdezzük le az állapotot munka közben (ms)
 FRISSITES_TETLEN_MP = 3000  # ha nincs aktív munka, ennyi is elég
 UZENET_MP = 100  # ilyen sűrűn nézzük meg, üzent-e a háttérszál
+KONZOL_ELENGEDES_MP = 500  # ennyivel az ablak megnyitása után válunk le a konzolról
+
+# Ezt az indító parancsfájl (inditas.bat) állítja be: jelzi, hogy a konzolablak
+# a mi indítónké, tehát a felület megnyitása után nincs rá szükség.
+KONZOL_JELZO = "TORRENTDL_KONZOL"
 
 
 def tcl_kornyezet(base: str | None = None, windows: bool | None = None) -> dict:
@@ -79,6 +85,48 @@ def dpi_tudatossag() -> None:
     except (OSError, AttributeError):  # pragma: no cover - régebbi Windows
         with contextlib.suppress(OSError, AttributeError):
             ctypes.windll.user32.SetProcessDPIAware()
+
+
+def _konzolrol_levalas() -> bool:
+    """A valódi leválasztás: a kimenet a semmibe, majd FreeConsole."""
+    if sys.platform != "win32":  # pragma: no cover - csak Windowson értelmes
+        return False
+    # A leválasztás után a szabvány kimenet írása hibát adna (a leíró érvénytelen
+    # lesz), ezért előbb a semmibe irányítjuk. Eddig sem látszott: a konzolablak
+    # el volt rejtve. Ami fontos, az a naplófájlba megy.
+    semmi = Path(os.devnull).open("w")  # noqa: SIM115 - a folyamat végéig kell
+    sys.stdout = semmi
+    sys.stderr = semmi
+    import ctypes  # noqa: PLC0415 - csak Windowson, csak egyszer
+
+    try:  # pragma: no cover - Windowson fut
+        return bool(ctypes.windll.kernel32.FreeConsole())
+    except (OSError, AttributeError):
+        return False
+
+
+def konzol_elengedes(
+    windows: bool | None = None, levalaszto: Callable[[], bool] | None = None
+) -> bool:
+    """Végleg elengedjük az indító konzolablakát, amint áll a felület.
+
+    Az indító (inditas.bat) konzolablakát az `indit.py` csak *elrejti*, a
+    folyamatunk viszont továbbra is ahhoz a konzolhoz tartozik. Egy rejtett
+    konzolt a Windows több alkalommal is visszahoz – például amikor a folyamat
+    új gyermeket indít (beállítás mentésekor a háttérdémon újraindul) –, és a
+    fekete ablak a felület elé ugrik, a gyermek nevével a címsorában.
+
+    A FreeConsole véglegesen leválaszt: onnantól nincs mit visszahozni, és a
+    később indított gyermekfolyamatok sem tudják megörökölni a konzolt.
+
+    Csak akkor nyúlunk hozzá, ha a konzol a mi indítónké (TORRENTDL_KONZOL);
+    ha valaki a saját termináljából indította a felületet, az az ablaka marad.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows or not os.environ.get(KONZOL_JELZO):
+        return False
+    return (levalaszto or _konzolrol_levalas)()
 
 
 def gomb_allapotok(status: dict) -> dict:
@@ -568,6 +616,9 @@ def main() -> int:
     tcl_kornyezet()
     dpi_tudatossag()
     app = App()
+    # Az ablak megvan: az indító konzolja innentől csak útban lenne. Nem
+    # azonnal engedjük el, hogy az indulás közbeni üzenetek még kiférjenek.
+    app.after(KONZOL_ELENGEDES_MP, konzol_elengedes)
     app.mainloop()
     return 0
 

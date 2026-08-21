@@ -232,6 +232,12 @@ def konzol_lathatosag(latszik, ablak_lekero=None, megjelenito=None):
     beallitas mentesekor, amikor a hatterdemon ujraindul) a Windows elore
     hozhatja, es rauszik a program ablakara. Ezert amint megnyilik a felulet,
     elrejtjuk - hiba eseten viszont visszahozzuk, hogy latszodjon az uzenet.
+
+    Az elrejtes onmagaban keves: a rejtett konzol tovabbra is a mienk, es a
+    Windows visszahozhatja. Ezert nem sokkal az ablak megnyitasa utan a felulet
+    (torrentdl.gui.konzol_elengedes) vegleg le is valik rola. Onnantol ez a
+    fuggveny mar nem talal konzolablakot, es hamisat ad vissza - a kesobbi
+    uzenetek a naplofajlba kerulnek.
     """
     if not os.environ.get(KONZOL_JELZO):
         return False

@@ -39,21 +39,36 @@ def ping(timeout: float = 2.0):
         return None
 
 
-# Windows folyamat-indítási jelző. A subprocess csak Windowson definiálja,
-# ezért a dokumentált számértéket írjuk ide – így máshol is tesztelhető.
+# Windows folyamat-indítási jelzők. A subprocess csak Windowson definiálja
+# őket, ezért a dokumentált számértéket írjuk ide – így máshol is tesztelhető.
 #
-# FONTOS: a CREATE_NO_WINDOW-t a Windows csendben eldobja, ha DETACHED_PROCESS
-# vagy CREATE_NEW_CONSOLE mellé kerül. Korábban így indítottuk a démont, és
-# emiatt a konzolablak a felület elé ugorhatott (pl. beállítás mentésekor,
-# amikor a démon újraindul). Ezért a jelzőt csak önmagában használjuk.
+# Miért nem a CREATE_NO_WINDOW? Mert azt a Windows csak KONZOLOS programra
+# alkalmazza ("The process is a console application that is being run without
+# a console window"): a démont viszont a grafikus alkalmazásnak számító
+# pythonw.exe indítja, amire a jelző nem vonatkozik. A gyermek ilyenkor
+# megörökli a szülő konzolját – és ha annak az ablaka el volt rejtve (az indító
+# elrejti, amint megnyílik a felület), a Windows a folyamat indításakor
+# visszahozza, immár a gyermek nevével a címsorában. Ez ugrott a felület elé
+# "…\.venv\Scripts\pythonw.exe" címmel, például minden beállítás-mentés után,
+# amikor a démon újraindul.
+#
+# A DETACHED_PROCESS az egyetlen jelző, ami mindkét fajta programra kimondja:
+# a gyermek NEM örökli a szülő konzolját, és újat sem nyit helyette. A kettő
+# egymást kizárja (DETACHED_PROCESS mellett a Windows eldobja a
+# CREATE_NO_WINDOW-t), ezért a DETACHED_PROCESS-t használjuk önmagában.
+#
+# A CREATE_NEW_PROCESS_GROUP azt zárja ki, hogy egy konzolban leütött Ctrl+C
+# a háttérben futó démont is leállítsa.
 CREATE_NO_WINDOW = 0x08000000
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 def indito_jelzok(windows: bool | None = None) -> int:
-    """A gyermekfolyamat indítási jelzői (Windowson konzolablak nélkül)."""
+    """A gyermekfolyamat indítási jelzői (Windowson konzol nélkül, leválasztva)."""
     if windows is None:
         windows = sys.platform == "win32"
-    return CREATE_NO_WINDOW if windows else 0
+    return DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP if windows else 0
 
 
 def _rejtett_ablak_beallitas():
@@ -73,9 +88,10 @@ def python_executable(
 ) -> str:
     """A démont konzol nélküli Pythonnal indítjuk.
 
-    Windowson a `pythonw.exe` grafikus alkalmazásként indul: soha nem nyit
-    konzolt, és nem is veszi el a fókuszt a felülettől. A kimenete nem hiányzik,
-    mert a démon a saját naplófájljába ír.
+    Windowson a `pythonw.exe` grafikus alkalmazásként indul: magától soha nem
+    nyit konzolablakot. Ettől még a szülő konzoljához hozzá lehetne kapcsolva –
+    ezt a DETACHED_PROCESS zárja ki (lásd fent). A kimenete nem hiányzik, mert
+    a démon a saját naplófájljába ír.
     """
     futtatando = alap if alap is not None else sys.executable
     if windows is None:
@@ -254,7 +270,9 @@ def torrent_name(data: bytes) -> str:
 
 
 __all__ = [
+    "CREATE_NEW_PROCESS_GROUP",
     "CREATE_NO_WINDOW",
+    "DETACHED_PROCESS",
     "DaemonError",
     "DaemonUnavailable",
     "NotRunning",

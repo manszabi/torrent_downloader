@@ -323,10 +323,16 @@ def test_folyamat_inditas():
     from torrentdl import client
 
     jelzok = client.indito_jelzok(windows=True)
-    assert jelzok == client.CREATE_NO_WINDOW, hex(jelzok)
-    # A DETACHED_PROCESS (0x8) mellett a Windows eldobná a CREATE_NO_WINDOW-t,
-    # és a konzolablak a felület elé ugorhatna – ezért nem szabad ott lennie.
-    assert not jelzok & 0x8, "DETACHED_PROCESS nem lehet a jelzők között"
+    # A démont a pythonw.exe indítja, ami grafikus alkalmazás: arra a Windows
+    # nem alkalmazza a CREATE_NO_WINDOW-t, a gyermek megörökölné a szülő
+    # (elrejtett) konzolját, és az a felület elé ugorna. A DETACHED_PROCESS az,
+    # ami kimondja: nincs örökölt konzol, és újat sem nyitunk.
+    assert jelzok & client.DETACHED_PROCESS, hex(jelzok)
+    # A kettő egymást kizárja: a DETACHED_PROCESS mellett a CREATE_NO_WINDOW-t
+    # a Windows eldobja, ezért nem szabad ott lennie.
+    assert not jelzok & client.CREATE_NO_WINDOW, hex(jelzok)
+    # Ctrl+C egy konzolban ne állítsa le a háttérben futó démont.
+    assert jelzok & client.CREATE_NEW_PROCESS_GROUP, hex(jelzok)
     assert client.indito_jelzok(windows=False) == 0, client.indito_jelzok(windows=False)
 
     # Windowson a konzol nélküli pythonw.exe kell, ha van.
