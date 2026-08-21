@@ -234,7 +234,7 @@ def main() -> int:
     # -------------------------------------------------- 3. összeomlás utáni folytatás
     def test_crash_resume():
         pid = int((home / "daemon.lock").read_text().strip())
-        os.kill(pid, signal.SIGKILL)
+        kegyetlen_leallitas(pid)
         wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
@@ -358,7 +358,7 @@ def main() -> int:
     def test_nem_tiszta_leallas():
         """Áramszünet-szerű leállás: induláskor mindent újraellenőriz."""
         pid = int((home / "daemon.lock").read_text().strip())
-        os.kill(pid, signal.SIGKILL)
+        kegyetlen_leallitas(pid)
         wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
 
         # Amíg a program áll, "elromlik" a lemezen az adat.
@@ -438,7 +438,38 @@ def main() -> int:
     return 0
 
 
+def kegyetlen_leallitas(pid: int) -> None:
+    """Áramszünet-szerű leállítás: a folyamat nem takaríthat maga után.
+
+    Unixon ezt a SIGKILL adja. Windowson nincs SIGKILL, ott az os.kill minden
+    más jelzésre a TerminateProcess-t hívja – az pedig ugyanilyen azonnali,
+    lekezelhetetlen leállás, tehát pontosan ezt a helyzetet állítja elő.
+    """
+    os.kill(pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
+
+
 def pid_alive(pid: int) -> bool:
+    """Él-e még a folyamat? (Csak kérdez, nem nyúl hozzá.)"""
+    if os.name == "nt":
+        # Windowson az os.kill nem kérdez, hanem LELŐ: a 0-s "jelzés" is
+        # TerminateProcess-szé válik. Ezért itt a folyamat leírójából
+        # olvassuk ki, hogy fut-e még.
+        import ctypes
+
+        SYNCHRONIZE = 0x0010_0000
+        STILL_ACTIVE = 259
+        kernel = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # A PROCESS_QUERY_LIMITED_INFORMATION kell a kilépési kódhoz.
+        leiro = kernel.OpenProcess(SYNCHRONIZE | 0x1000, False, pid)
+        if not leiro:
+            return False
+        try:
+            kod = ctypes.c_ulong()
+            if not kernel.GetExitCodeProcess(leiro, ctypes.byref(kod)):
+                return False
+            return kod.value == STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(leiro)
     try:
         os.kill(pid, 0)
     except OSError:
