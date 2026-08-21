@@ -41,7 +41,10 @@ def run(home: Path, *args, check=True):
         [sys.executable, "-m", "torrentdl", *args],
         env=env,
         capture_output=True,
-        text=True,
+        # A gyerek UTF-8-cal ír (lásd kimenet_utf8); a text=True viszont a
+        # rendszer kódlapjával olvasna vissza, ami Windowson elszáll.
+        encoding="utf-8",
+        errors="replace",
         timeout=90,
         check=False,  # a hibát mi magunk értékeljük ki
     )
@@ -80,8 +83,13 @@ def make_payload(directory: Path, size: int) -> None:
 
 
 def status(home: Path) -> dict:
-    job = json.loads((home / "job.json").read_text()) if (home / "job.json").exists() else None
-    last = json.loads((home / "last.json").read_text()) if (home / "last.json").exists() else None
+    # A fájlokat a cfgmod UTF-8-ban írja; a rendszer kódlapja Windowson mást adna.
+    def olvas(nev):
+        ut = home / nev
+        return json.loads(ut.read_text(encoding="utf-8")) if ut.exists() else None
+
+    job = olvas("job.json")
+    last = olvas("last.json")
     return {"job": job, "last": last}
 
 
@@ -239,7 +247,7 @@ def test_zar_eszlelese():
 
         # Összeomlás után ottmaradt zárfájl: a folyamat már nem él.
         halott = munka / "halott.lock"
-        halott.write_text("999999999\n")
+        halott.write_text("999999999\n", encoding="utf-8")
         assert not lock_modul.pid_alive(999_999_999)
         assert not lock_modul.tartja_meg_valaki(halott), "a hátrahagyott zárfájl ne blokkoljon"
     finally:
@@ -311,12 +319,14 @@ def test_folyamat_inditas():
     assert client.indito_jelzok(windows=False) == 0
 
     # Windowson a konzol nélküli pythonw.exe kell, ha van.
-    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True) == (
-        "/x/pythonw.exe"
-    )
-    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False) == (
-        "/x/python.exe"
-    )
+    # A Path a rendszer elválasztójával ír vissza (Windowson visszaperjellel),
+    # ezért az elvárt értéket is ugyanígy képezzük.
+    assert client.python_executable(
+        "/x/python.exe", windows=True, letezik=lambda p: True
+    ) == str(Path("/x/pythonw.exe"))
+    assert client.python_executable(
+        "/x/python.exe", windows=True, letezik=lambda p: False
+    ) == str(Path("/x/python.exe"))
     assert client.python_executable("/x/python3", windows=False) == "/x/python3"
 
 

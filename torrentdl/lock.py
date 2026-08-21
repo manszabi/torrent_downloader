@@ -22,15 +22,19 @@ else:
 def read_pid(path: Path) -> int | None:
     """A zárfájlba írt folyamatazonosító, vagy None, ha nincs / olvashatatlan.
 
-    Windowson a zárolt első bájtot nem lehet felülírni, ezért a szám előtt egy
-    kitöltő bájt áll (lásd `_write_pid`). A számjegyeket ezért keresve olvassuk
-    ki, nem a fájl teljes tartalmát alakítjuk számmá.
+    Windowson a zár az első bájtra vonatkozik, és ott ez KÖTELEZŐ zár: amíg él,
+    azt a bájtot más leíró nem is olvashatja – egy egyszerű `read_text()` a
+    fájl elejéről indulva sharing violation hibára futna. Ezért (ahogy az írás
+    is: lásd `_write_pid`) a zárolt bájt UTÁN kezdünk olvasni.
     """
+    kezdet = 1 if sys.platform == "win32" else 0
     try:
-        nyers = Path(path).read_text(errors="replace")
+        with Path(path).open("rb") as fh:
+            fh.seek(kezdet)
+            nyers = fh.read()
     except OSError:
         return None
-    talalat = re.search(r"\d+", nyers)
+    talalat = re.search(r"\d+", nyers.decode("utf-8", "replace"))
     return int(talalat.group()) if talalat else None
 
 
