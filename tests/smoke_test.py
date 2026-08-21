@@ -316,18 +316,19 @@ def test_folyamat_inditas():
     # A DETACHED_PROCESS (0x8) mellett a Windows eldobná a CREATE_NO_WINDOW-t,
     # és a konzolablak a felület elé ugorhatna – ezért nem szabad ott lennie.
     assert not jelzok & 0x8, "DETACHED_PROCESS nem lehet a jelzők között"
-    assert client.indito_jelzok(windows=False) == 0
+    assert client.indito_jelzok(windows=False) == 0, client.indito_jelzok(windows=False)
 
     # Windowson a konzol nélküli pythonw.exe kell, ha van.
-    # A Path a rendszer elválasztójával ír vissza (Windowson visszaperjellel),
-    # ezért az elvárt értéket is ugyanígy képezzük.
-    assert client.python_executable(
-        "/x/python.exe", windows=True, letezik=lambda p: True
-    ) == str(Path("/x/pythonw.exe"))
-    assert client.python_executable(
-        "/x/python.exe", windows=True, letezik=lambda p: False
-    ) == str(Path("/x/python.exe"))
-    assert client.python_executable("/x/python3", windows=False) == "/x/python3"
+    # Ha van pythonw.exe, az útvonal a Path-on megy át, és a rendszer
+    # elválasztójával jön vissza (Windowson visszaperjellel) – az elvárt
+    # értéket ezért ugyanúgy képezzük.
+    van_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True)
+    assert van_pythonw == str(Path("/x/pythonw.exe")), van_pythonw
+    # Ha nincs, a kapott szöveg változatlanul jön vissza (nem megy át Path-on).
+    nincs_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False)
+    assert nincs_pythonw == "/x/python.exe", nincs_pythonw
+    nem_windows = client.python_executable("/x/python3", windows=False)
+    assert nem_windows == "/x/python3", nem_windows
 
 
 def test_session_statisztika():
