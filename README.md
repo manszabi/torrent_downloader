@@ -36,8 +36,11 @@ a vezérlést az `indit.py`-nak, ami:
 3. elindítja az ablakot.
 
 Amint megnyílik az ablak, a fekete konzolablak eltűnik (hiba esetén visszajön
-az üzenettel együtt), a háttérdémon pedig konzol nélküli Pythonnal indul – így
-semmi nem ugrik a program ablaka elé.
+az üzenettel együtt), majd a felület véglegesen le is válik róla – így a
+Windows később sem tudja visszahozni a program ablaka elé. A háttérdémon
+ráadásul konzol nélküli, leválasztott folyamatként indul (`pythonw.exe` +
+`DETACHED_PROCESS`), ezért az újraindítása – például beállítás mentésekor –
+sem villant fel semmit.
 
 Ha nincs Python a gépen, a parancsfájl megmondja, honnan töltsd le. A `.venv`
 mappa bármikor törölhető: a következő indításkor újra elkészül. Ha nem kéred a
@@ -277,9 +280,9 @@ pull requestnél, a `.github/workflows/tesztek.yml` szerint:
 | típusellenőrzés (`mypy torrentdl`) | Linux, Python 3.13 |
 
 A Windows azért van benne, mert a program elsősorban oda készült: az indító
-parancsfájl, a konzolablak nélküli démonindítás és a Tcl/Tk könyvtár
-beállítása csak ott mérhető meg igazán. A grafikus felület tesztjéhez Linuxon
-a futtató `xvfb-run`-t használ.
+parancsfájl, a konzolról leváló felület, a konzol nélküli démonindítás és a
+Tcl/Tk könyvtár beállítása csak ott mérhető meg igazán. A grafikus felület
+tesztjéhez Linuxon a futtató `xvfb-run`-t használ.
 
 A ruff és a mypy verziója a `requirements-dev.txt`-ben rögzített, hogy egy új
 kiadásuk ne buktasson el egy változatlan kódbázist.

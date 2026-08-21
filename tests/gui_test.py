@@ -30,7 +30,13 @@ from torrentdl import config as cfgmod  # noqa: E402
 from torrentdl.format import human_bytes, human_time, kimenet_utf8  # noqa: E402
 
 kimenet_utf8()
-from torrentdl.gui import App, gomb_allapotok, tcl_kornyezet  # noqa: E402
+from torrentdl.gui import (  # noqa: E402
+    KONZOL_JELZO,
+    App,
+    gomb_allapotok,
+    konzol_elengedes,
+    tcl_kornyezet,
+)
 
 HIBAK = []
 
@@ -132,6 +138,36 @@ def main() -> int:
                 os.environ.pop(kulcs, None)
                 if ertek is not None:
                     os.environ[kulcs] = ertek
+
+    # Az indító konzolját az ablak megnyitása után végleg elengedjük: amíg a
+    # folyamathoz tartozik, a Windows visszahozhatja a felület elé (például
+    # amikor beállítás mentésekor újraindul a háttérdémon).
+    hivasok = []
+    regi_jelzo = os.environ.pop(KONZOL_JELZO, None)
+    try:
+        check(
+            "saját terminálból indítva nem válunk le",
+            konzol_elengedes(windows=True, levalaszto=lambda: hivasok.append(1) or True),
+            False,
+        )
+        check("ilyenkor semmit nem hívunk", hivasok, [])
+        os.environ[KONZOL_JELZO] = "1"
+        check(
+            "az indító konzolját elengedjük",
+            konzol_elengedes(windows=True, levalaszto=lambda: hivasok.append(1) or True),
+            True,
+        )
+        check("egyszer, a leválasztóval", hivasok, [1])
+        check(
+            "Windowson kívül nincs mit tenni",
+            konzol_elengedes(windows=False, levalaszto=lambda: hivasok.append(1) or True),
+            False,
+        )
+        check("máshol sem hívunk semmit", hivasok, [1])
+    finally:
+        os.environ.pop(KONZOL_JELZO, None)
+        if regi_jelzo is not None:
+            os.environ[KONZOL_JELZO] = regi_jelzo
 
     check("méret formázás", human_bytes(1536), "1.50 KiB")
     check("idő formázás", human_time(3725), "1ó 2p")
