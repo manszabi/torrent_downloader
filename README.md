@@ -1,5 +1,7 @@
 # torrentdl
 
+[![tesztek](https://github.com/manszabi/torrent_downloader/actions/workflows/tesztek.yml/badge.svg)](https://github.com/manszabi/torrent_downloader/actions/workflows/tesztek.yml)
+
 Egyszerű torrent letöltő Pythonban, [libtorrent](https://libtorrent.org/) motorral.
 Egyszerre **egy** torrentet (vagy magnet linket) tölt, a háttérben fut, és
 összeomlás után is folytatja onnan, ahol abbahagyta. Van grafikus felülete és
@@ -228,6 +230,8 @@ végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
 | `torrentdl/client.py` | a démon indítása és vezérlése (ezt hívja a GUI és a CLI is) |
 | `torrentdl/config.py`, `format.py`, `lock.py`, `naplo.py`, `protocol.py` | beállítások, formázás, egypéldány-zár, naplóolvasás, protokoll |
 | `ruff.toml`, `pyproject.toml` | a statikus elemzés és a típusellenőrzés beállításai |
+| `requirements-dev.txt` | a fejlesztői eszközök rögzített verziói (ruff, mypy) |
+| `.github/workflows/tesztek.yml` | a GitHubon automatikusan futó ellenőrzés |
 
 ## Tesztek
 
@@ -242,7 +246,7 @@ teljesítmény) és a **mypy** (típusellenőrzés) ellenőrzést is, ha telepí
 vannak:
 
 ```bash
-pip install ruff mypy
+pip install -r requirements-dev.txt   # rögzített ruff- és mypy-verzió
 ruff check .        # külön is
 mypy torrentdl
 ```
@@ -251,7 +255,8 @@ mypy torrentdl
   alapállapotba állás, szüneteltetés időzítéssel, `SIGKILL` utáni folytatás,
   törlés a fájlokkal, megosztás újraindítás után, **sérült fájl felismerése és
   újratöltése**, nem tiszta leállás utáni ellenőrzés, leválasztott meghajtó,
-  valamint a hibafelismerés és a session-statisztika egységtesztjei.
+  valamint a hibafelismerés, a session-statisztika és az ellenőrzés közbeni
+  szüneteltetés egységtesztjei.
 - `tests/gui_test.py` – valódi Tk ablakkal: indítás, hibás forrás kezelése,
   gombok engedélyezése, szünet/folytatás, törlés (Linuxon `xvfb-run` kell hozzá,
   a futtató magától használja).
@@ -259,6 +264,25 @@ mypy torrentdl
   címkéi (ezeken szokott elcsúszni a `cmd.exe`).
 - `tests/indit_test.py` – az indító függőség-ellenőrzései, a `.venv` kezelése
   és a Python-verzió választása.
+
+### Automatikus ellenőrzés (CI)
+
+Ugyanez fut le magától a GitHubon minden feltöltésnél és minden
+pull requestnél, a `.github/workflows/tesztek.yml` szerint:
+
+| ellenőrzés | hol fut |
+|---|---|
+| teljes tesztkészlet (`tests/futtato.py`) | Linuxon és **Windowson**, Python 3.10–3.13 |
+| statikus elemzés (`ruff check .`) | Linux, Python 3.13 |
+| típusellenőrzés (`mypy torrentdl`) | Linux, Python 3.13 |
+
+A Windows azért van benne, mert a program elsősorban oda készült: az indító
+parancsfájl, a konzolablak nélküli démonindítás és a Tcl/Tk könyvtár
+beállítása csak ott mérhető meg igazán. A grafikus felület tesztjéhez Linuxon
+a futtató `xvfb-run`-t használ.
+
+A ruff és a mypy verziója a `requirements-dev.txt`-ben rögzített, hogy egy új
+kiadásuk ne buktasson el egy változatlan kódbázist.
 
 ## Erőforrás-használat
 

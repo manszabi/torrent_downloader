@@ -1,0 +1,9 @@
+# Fejlesztoi fuggosegek. Telepites: pip install -r requirements-dev.txt
+#
+# A linter es a tipusellenorzo verzioja PONTOSAN rogzitett. Uj kiadasaik uj
+# szabalyokat hoznak es valtoztatnak a meglevoken, ezert egy lebego verzio egy
+# valtozatlan kodbazison is eltorne a CI-t. A frissitesuk legyen dontes (kulon
+# commit), ne veletlen.
+-r requirements.txt
+ruff==0.15.8
+mypy==1.19.1

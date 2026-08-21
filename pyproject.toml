@@ -22,7 +22,10 @@ packages = ["torrentdl"]
 
 [tool.mypy]
 python_version = "3.10"
-ignore_missing_imports = true          # a libtorrenthez nincs típusleírás
+# A libtorrent újabb kiadásai már hoznak típusleírást (librt csomag), ezért a
+# mypy valóban ellenőrzi a libtorrent-hívásokat. Ez a beállítás azért marad,
+# hogy leírás nélküli (régebbi) telepítésen se álljon meg az ellenőrzés.
+ignore_missing_imports = true
 warn_unused_ignores = true
 # A démon állapotát (job, handle) minden belépési pont ellenőrzi futásidőben,
 # de ezt a mypy nem tudja metódushatárokon átvinni; a maradék jelzés zaj lenne.

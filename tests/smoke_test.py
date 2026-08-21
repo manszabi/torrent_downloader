@@ -11,7 +11,6 @@ Futtatás:  python3 tests/smoke_test.py
 
 from __future__ import annotations
 
-import json
 import os
 import random
 import shutil
@@ -27,6 +26,12 @@ import libtorrent as lt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from torrentdl import config as cfgmod  # noqa: E402
+from torrentdl import lock as lock_modul  # noqa: E402
+from torrentdl.format import kimenet_utf8  # noqa: E402
+
+kimenet_utf8()
+
 FAILURES = []
 
 
@@ -36,13 +41,28 @@ def run(home: Path, *args, check=True):
         [sys.executable, "-m", "torrentdl", *args],
         env=env,
         capture_output=True,
-        text=True,
+        # A gyerek UTF-8-cal ír (lásd kimenet_utf8); a text=True viszont a
+        # rendszer kódlapjával olvasna vissza, ami Windowson elszáll.
+        encoding="utf-8",
+        errors="replace",
         timeout=90,
         check=False,  # a hibát mi magunk értékeljük ki
     )
     if check and proc.returncode != 0:
-        raise AssertionError(f"'{' '.join(args)}' hibára futott:\n{proc.stdout}\n{proc.stderr}")
+        raise AssertionError(
+            f"'{' '.join(args)}' hibára futott:\n{proc.stdout}\n{proc.stderr}"
+            + naplo_reszlet(home)
+        )
     return proc
+
+
+def naplo_reszlet(home: Path, sorok: int = 25) -> str:
+    """A démon naplójának vége – e nélkül egy indulási hiba okát nem látni."""
+    naplo = home / "daemon.log"
+    if not naplo.is_file():
+        return "\n(nincs démonnapló)"
+    vege = naplo.read_text(encoding="utf-8", errors="replace").splitlines()[-sorok:]
+    return "\n--- a démon naplójának vége ---\n" + "\n".join(vege)
 
 
 def make_torrent(source_dir: Path, out: Path) -> Path:
@@ -63,18 +83,34 @@ def make_payload(directory: Path, size: int) -> None:
 
 
 def status(home: Path) -> dict:
-    job = json.loads((home / "job.json").read_text()) if (home / "job.json").exists() else None
-    last = json.loads((home / "last.json").read_text()) if (home / "last.json").exists() else None
-    return {"job": job, "last": last}
+    # Ugyanazzal az olvasóval, amit a program használ: UTF-8, és elviseli, ha a
+    # fájlt épp atomi cserével írják felül (Windowson ez hibát adhatna).
+    return {
+        "job": cfgmod.read_json(home / "job.json"),
+        "last": cfgmod.read_json(home / "last.json"),
+    }
 
 
-def wait_for(predicate, timeout=60, interval=0.5, what=""):
+def wait_for(predicate, timeout=60, interval=0.5, what="", home=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
             return True
         time.sleep(interval)
-    raise AssertionError(f"időtúllépés: {what}")
+    # Az időtúllépés önmagában semmit nem árul el. Ha megkaptuk az
+    # adatkönyvtárat, kiírjuk, milyen állapotban ragadt a munka, és mit írt
+    # közben a démon – e nélkül egy másik rendszeren (pl. a CI Windows-ágán)
+    # nem lehet kideríteni, mi történt.
+    reszletek = ""
+    if home is not None:
+        job = status(home)["job"] or {}
+        reszletek = (
+            f"\n  a munka állapota: {job.get('state')!r}"
+            f" (haladás: {job.get('progress')!r},"
+            f" ellenőrzés oka: {job.get('recheck_reason')!r},"
+            f" hiba: {job.get('error')!r})" + naplo_reszlet(home)
+        )
+    raise AssertionError(f"időtúllépés: {what}{reszletek}")
 
 
 def check(name: str, fn):
@@ -88,7 +124,7 @@ def check(name: str, fn):
 
 
 class HamisHibakod:
-    def __init__(self, ertek):
+    def __init__(self, ertek=0):
         self._ertek = ertek
 
     def value(self):
@@ -120,6 +156,168 @@ def test_hibafelismeres():
     assert not engine._hely_hiba(HamisAlert(0, "file not found"))
 
 
+class HamisSession:
+    """Amit a fő ciklus időzített része kér a sessiontől."""
+
+    def post_session_stats(self):
+        pass
+
+    def pop_alerts(self):
+        return []
+
+
+class HamisHash:
+    def get_best(self):
+        return "0" * 40
+
+
+class HamisAllapot:
+    """A torrent_handle.status() mezői, amiket a démon megkérdez."""
+
+    def __init__(self):
+        # Nem "ellenőrzés" állapot: a félbehagyott ellenőrzés kiértékelése
+        # pont ilyenkor futna le a hibás változatban.
+        self.state = lt.torrent_status.states.downloading
+        self.progress = 0.5          # a leállított ellenőrzés hiányosnak látszik
+        self.has_metadata = False    # így a folytatási adat mentése kimarad
+        self.errc = HamisHibakod()
+        self.name = "teszt"
+        self.info_hashes = HamisHash()
+        self.total_wanted = 1000
+        self.total_wanted_done = 500
+        self.total_done = 500
+        self.download_payload_rate = 0
+        self.upload_payload_rate = 0
+        self.total_payload_upload = 0
+        self.num_peers = 0
+        self.num_seeds = 0
+        self.num_pieces = 0
+
+
+class HamisHandle:
+    """Annyit tud, amennyit a szüneteltetés és a folytatás megkérdez tőle."""
+
+    def __init__(self):
+        self.hivasok = []
+
+    def is_valid(self):
+        return True
+
+    def status(self):
+        return HamisAllapot()
+
+    def __getattr__(self, nev):
+        def naplozo(*_a, **_kw):
+            self.hivasok.append(nev)
+
+        return naplozo
+
+
+def test_forras_meret_hatar():
+    """Túl nagy fájl nem mehet át a vezérlőcsatornán: előbb derüljön ki."""
+    from torrentdl import client
+
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-forras-"))
+    try:
+        nagy = munka / "nagy.torrent"
+        with nagy.open("wb") as fh:
+            fh.write(b"d")
+            fh.truncate(client.MAX_TORRENT_BYTES + 1)
+        try:
+            client.load_source(str(nagy))
+            raise AssertionError("a túl nagy fájlt el kellett volna utasítani")
+        except client.SourceError as exc:
+            assert "túl nagy" in str(exc), exc
+
+        kicsi = munka / "kicsi.torrent"
+        kicsi.write_bytes(b"d3:foo3:bare")
+        assert client.load_source(str(kicsi))["source_type"] == "file"
+    finally:
+        shutil.rmtree(munka, ignore_errors=True)
+
+
+def test_zar_eszlelese():
+    """A leálló démon zárát észre kell venni, különben az újraindítás elbukik.
+
+    A démon a vezérlőcsatornát a mentések ELŐTT zárja be, a zárat viszont csak
+    utánuk engedi el. Ha a leállítás csak a pingig vár, egy azonnal induló új
+    példány a zárba ütközik és rögtön kilép ("nem sikerült elindítani a
+    háttérdémont"). Ezt a köztes állapotot kell látnia a programnak.
+    """
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-zar-"))
+    try:
+        zarfajl = munka / "daemon.lock"
+        assert not lock_modul.tartja_meg_valaki(zarfajl), "zárfájl nélkül nincs mit tartani"
+
+        zar = lock_modul.SingleInstanceLock(zarfajl)
+        assert zar.acquire(), "a zárat meg kellett volna kapni"
+        assert lock_modul.read_pid(zarfajl) == os.getpid()
+        assert lock_modul.tartja_meg_valaki(zarfajl), "a tartott zárat észre kell venni"
+        zar.release()
+        assert not lock_modul.tartja_meg_valaki(zarfajl), "elengedés után szabad a zár"
+
+        # Összeomlás után ottmaradt zárfájl: a folyamat már nem él.
+        halott = munka / "halott.lock"
+        halott.write_text("999999999\n", encoding="utf-8")
+        assert not lock_modul.pid_alive(999_999_999)
+        assert not lock_modul.tartja_meg_valaki(halott), "a hátrahagyott zárfájl ne blokkoljon"
+    finally:
+        shutil.rmtree(munka, ignore_errors=True)
+
+
+def test_szunet_ellenorzes_kozben():
+    """Ellenőrzés közben megnyomott Szünet: a szünetnek meg kell maradnia.
+
+    Korábban a félbehagyott ellenőrzést a program kiértékelte. A leállított
+    torrent haladása hiányosnak látszik, ezért "sérült adatot" hitt, a
+    szünetet felülírva letöltésre váltott, és magától újraindult.
+    """
+    from torrentdl import engine
+
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-szunet-"))
+    regi_home = os.environ.get("TORRENTDL_HOME")
+    os.environ["TORRENTDL_HOME"] = str(munka / "home")
+    try:
+        cel = munka / "cel"
+        cel.mkdir()
+        daemon = engine.Daemon.__new__(engine.Daemon)  # session és zár nélkül
+        engine.Daemon.__init__(daemon)
+        daemon.handle = HamisHandle()
+        daemon.ses = HamisSession()
+        daemon.job = {
+            "source": "teszt",
+            "source_type": "file",
+            "save_path": str(cel),
+            "state": engine.STATE_VERIFYING,
+            "recheck_reason": engine.OK_KERES,
+            "paused_until": None,
+        }
+        daemon.recheck = {"ok": engine.OK_KERES, "kezdet": time.time(), "latott": True}
+
+        daemon.cmd_pause({})
+        assert daemon.job["state"] == engine.STATE_PAUSED, daemon.job["state"]
+        assert daemon.recheck is None, "a szünet után nem maradhat futó ellenőrzés"
+        assert daemon.job.get("recheck_pending") == engine.OK_KERES
+
+        # A fő ciklus időzített hívása nem írhatja felül a szünetet.
+        daemon._periodic()
+        assert daemon.job["state"] == engine.STATE_PAUSED, (
+            f"a szünetet felülírta az ellenőrzés kiértékelése: {daemon.job['state']}"
+        )
+
+        # Folytatáskor viszont az elhalasztott ellenőrzés induljon el.
+        daemon._do_resume()
+        assert daemon.job["state"] == engine.STATE_VERIFYING, daemon.job["state"]
+        assert daemon.recheck is not None, "a folytatás nem indította újra az ellenőrzést"
+        assert "force_recheck" in daemon.handle.hivasok
+    finally:
+        if regi_home is None:
+            os.environ.pop("TORRENTDL_HOME", None)
+        else:
+            os.environ["TORRENTDL_HOME"] = regi_home
+        shutil.rmtree(munka, ignore_errors=True)
+
+
 def test_folyamat_inditas():
     """A háttérdémon indítási módja Windowson (konzolablak nélkül)."""
     from torrentdl import client
@@ -129,16 +327,19 @@ def test_folyamat_inditas():
     # A DETACHED_PROCESS (0x8) mellett a Windows eldobná a CREATE_NO_WINDOW-t,
     # és a konzolablak a felület elé ugorhatna – ezért nem szabad ott lennie.
     assert not jelzok & 0x8, "DETACHED_PROCESS nem lehet a jelzők között"
-    assert client.indito_jelzok(windows=False) == 0
+    assert client.indito_jelzok(windows=False) == 0, client.indito_jelzok(windows=False)
 
     # Windowson a konzol nélküli pythonw.exe kell, ha van.
-    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True) == (
-        "/x/pythonw.exe"
-    )
-    assert client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False) == (
-        "/x/python.exe"
-    )
-    assert client.python_executable("/x/python3", windows=False) == "/x/python3"
+    # Ha van pythonw.exe, az útvonal a Path-on megy át, és a rendszer
+    # elválasztójával jön vissza (Windowson visszaperjellel) – az elvárt
+    # értéket ezért ugyanúgy képezzük.
+    van_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True)
+    assert van_pythonw == str(Path("/x/pythonw.exe")), van_pythonw
+    # Ha nincs, a kapott szöveg változatlanul jön vissza (nem megy át Path-on).
+    nincs_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False)
+    assert nincs_pythonw == "/x/python.exe", nincs_pythonw
+    nem_windows = client.python_executable("/x/python3", windows=False)
+    assert nem_windows == "/x/python3", nem_windows
 
 
 def test_session_statisztika():
@@ -181,6 +382,9 @@ def main() -> int:
     check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
     check("session statisztika (DHT-számláló)", test_session_statisztika)
     check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
+    check("szüneteltetés ellenőrzés közben", test_szunet_ellenorzes_kozben)
+    check("forrás méretkorlátja", test_forras_meret_hatar)
+    check("egypéldány-zár észlelése", test_zar_eszlelese)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
@@ -198,6 +402,7 @@ def main() -> int:
             lambda: status(home)["job"] is None and status(home)["last"] is not None,
             timeout=60,
             what="a letöltés befejeződése és alapállapotba állás",
+            home=home,
         )
         last = status(home)["last"]
         assert last["verified"] is True, last
@@ -215,7 +420,7 @@ def main() -> int:
         torrent = make_torrent(src, work / "fut.torrent")
         dest = work / "cel-fut"
         run(home, "add", str(torrent), "-d", str(dest))
-        wait_for(lambda: status(home)["job"] is not None, what="a letöltés megjelenése")
+        wait_for(lambda: status(home)["job"] is not None, what="a letöltés megjelenése", home=home)
         run(home, "pause", "--for", "5s")
         assert status(home)["job"]["state"] == "paused"
         assert status(home)["job"]["paused_until"] is not None
@@ -223,6 +428,7 @@ def main() -> int:
             lambda: status(home)["job"]["state"] == "downloading",
             timeout=30,
             what="automatikus folytatás a szünet lejártakor",
+            home=home,
         )
         run(home, "pause")
         assert status(home)["job"]["state"] == "paused"
@@ -233,9 +439,15 @@ def main() -> int:
 
     # -------------------------------------------------- 3. összeomlás utáni folytatás
     def test_crash_resume():
-        pid = int((home / "daemon.lock").read_text().strip())
-        os.kill(pid, signal.SIGKILL)
-        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
+        pid = lock_modul.read_pid(home / "daemon.lock")
+        assert pid is not None, "nincs folyamatazonosító a zárfájlban"
+        kegyetlen_leallitas(pid)
+        wait_for(
+            lambda: not lock_modul.pid_alive(pid),
+            timeout=20,
+            what="a démon leállása",
+            home=home,
+        )
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
         assert "megszakadt" in text, text
@@ -244,6 +456,7 @@ def main() -> int:
             lambda: status(home)["job"]["state"] == "downloading",
             timeout=30,
             what="folytatás összeomlás után",
+            home=home,
         )
 
     check("összeomlás utáni folytatás", test_crash_resume)
@@ -277,6 +490,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a megosztásba lépés a letöltés után",
+            home=home,
         )
         assert status(home)["last"]["verified"] is True
 
@@ -297,6 +511,7 @@ def main() -> int:
             and status(home)["job"]["save_path"].endswith("cel-megoszt2"),
             timeout=30,
             what="az új letöltés indulása megosztás közben",
+            home=home,
         )
         run(home, "cancel", "-y")
         # A megosztott fájlok a helyükön maradtak.
@@ -324,6 +539,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a kész torrent megosztásba lépése",
+            home=home,
         )
         fajl = dest / src.name / "adat.bin"
         romlas["fajl"] = fajl
@@ -339,6 +555,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "downloading",
             timeout=90,
             what="a sérült darab felismerése",
+            home=home,
         )
         job = status(home)["job"]
         assert job["progress"] < 1.0, "a program épnek hitte a sérült fájlt"
@@ -351,15 +568,22 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=90,
             what="az ép fájl elfogadása",
+            home=home,
         )
 
     check("sérült fájl felismerése és újratöltése", test_serult_adat)
 
     def test_nem_tiszta_leallas():
         """Áramszünet-szerű leállás: induláskor mindent újraellenőriz."""
-        pid = int((home / "daemon.lock").read_text().strip())
-        os.kill(pid, signal.SIGKILL)
-        wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
+        pid = lock_modul.read_pid(home / "daemon.lock")
+        assert pid is not None, "nincs folyamatazonosító a zárfájlban"
+        kegyetlen_leallitas(pid)
+        wait_for(
+            lambda: not lock_modul.pid_alive(pid),
+            timeout=20,
+            what="a démon leállása",
+            home=home,
+        )
 
         # Amíg a program áll, "elromlik" a lemezen az adat.
         fajl = romlas["fajl"]
@@ -372,6 +596,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "downloading",
             timeout=90,
             what="indulási ellenőrzés a nem tiszta leállás után",
+            home=home,
         )
         job = status(home)["job"]
         assert job["progress"] < 1.0, "a program a mentett állapotot hitte el a lemez helyett"
@@ -398,6 +623,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a megosztásba lépés",
+            home=home,
         )
 
         # "Leválasztjuk a meghajtót": a célmappa eltűnik, amíg a program áll.
@@ -408,6 +634,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "error",
             timeout=30,
             what="a hiányzó célmappa felismerése",
+            home=home,
         )
         job = status(home)["job"]
         assert "célmappa" in (job.get("error") or ""), job
@@ -421,6 +648,7 @@ def main() -> int:
             in ("seeding", "verifying", "downloading"),
             timeout=60,
             what="folytatás a meghajtó visszacsatlakoztatása után",
+            home=home,
         )
         run(home, "cancel", "-y")
         run(home, "config", "--set", "seed_after_complete=false")
@@ -438,12 +666,14 @@ def main() -> int:
     return 0
 
 
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+def kegyetlen_leallitas(pid: int) -> None:
+    """Áramszünet-szerű leállítás: a folyamat nem takaríthat maga után.
+
+    Unixon ezt a SIGKILL adja. Windowson nincs SIGKILL, ott az os.kill minden
+    más jelzésre a TerminateProcess-t hívja – az pedig ugyanilyen azonnali,
+    lekezelhetetlen leállás, tehát pontosan ezt a helyzetet állítja elő.
+    """
+    os.kill(pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
 
 
 if __name__ == "__main__":

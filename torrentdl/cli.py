@@ -14,6 +14,7 @@ from .format import (
     human_bytes,
     human_rate,
     human_time,
+    kimenet_utf8,
     parse_duration,
     progress_bar,
     state_label,
@@ -333,5 +334,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    kimenet_utf8()
     args = build_parser().parse_args(argv)
     return args.func(args)

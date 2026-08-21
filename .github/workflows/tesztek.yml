@@ -1,0 +1,96 @@
+# Automatikus ellenőrzés minden feltöltésnél.
+#
+# A teljes tesztkészlet lefut minden ág minden feltöltésénél, és lefut
+# WINDOWSON is. Ez utóbbi itt sokat ér: a program elsősorban Windowsra
+# készült (indító parancsfájl, konzolablak nélküli démonindítás, Tcl/Tk
+# könyvtár beállítása), de eddig senki nem futtatta azon a rendszeren.
+name: tesztek
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:        # kézzel is indítható a felületről
+
+permissions:
+  contents: read
+
+concurrency:                # egy ágon csak a legutolsó futás érdekes
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  teszt:
+    name: tesztek (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false      # a Windows-hiba ne rejtse el a linuxosat
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # A felső határt a libtorrent szabja meg: kész csomag 3.13-ig van hozzá
+        # (lásd pyproject.toml: requires-python).
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # A .gitattributes sorvég-szabályait a parancsfájl tesztje
+          # ellenőrzi; ehhez a fájloknak úgy kell megérkezniük, ahogy egy
+          # klónozásnál is.
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # A grafikus felület tesztjéhez képernyő és tkinter kell. Windowson
+      # mindkettő adott, Linuxon a csomagkezelőtől jön. A futtató magától
+      # használja az xvfb-run-t, ha megtalálja.
+      - name: tkinter és virtuális képernyő (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-tk xvfb
+
+      - name: Függőségek
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Teljes tesztkészlet
+        run: python tests/futtato.py
+
+  ruff:
+    name: statikus elemzés (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      # A verzió kötve van (requirements-dev.txt): egy új ruff új szabályokkal
+      # jön, és azok egy változatlan kódot is elbuktatnának.
+      - run: pip install -r requirements-dev.txt
+      # A beállítása a ruff.toml-ban van, ezért itt elég a csupasz futtatás.
+      - run: ruff check .
+
+  mypy:
+    name: típusellenőrzés (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      # A libtorrenthez nincs típusleírás (a pyproject.toml ezért engedi el),
+      # a tkinteré pedig a mypy-vel érkezik – külön telepíteni egyiket sem kell.
+      - run: mypy torrentdl

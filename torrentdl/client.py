@@ -15,9 +15,18 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from . import config as cfgmod
+from .format import human_bytes as _meret
+from .lock import tartja_meg_valaki
 from .protocol import DaemonError, NotRunning, request
+
+# Egy .torrent fájl a gyakorlatban néhány száz kilobájt. A felső határ azért
+# kell, mert a tartalom base64-ként megy át a vezérlőcsatornán, aminek 16 MB a
+# korlátja – e nélkül egy rossz URL (pl. egy nagy telepítőkép) előbb teljesen
+# beolvasódna a memóriába, és csak utána derülne ki, hogy nem is .torrent.
+MAX_TORRENT_BYTES = 8 * 1024 * 1024
 
 DAEMON_START_TIMEOUT = 25.0
 
@@ -81,6 +90,14 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
     """Elindítja a démont a háttérben, és megvárja, amíg válaszol."""
     if ping():
         return True
+    deadline = time.time() + wait
+    # Egy előző démon lehet, hogy még leáll: a vezérlőcsatornáját már bezárta
+    # (nem válaszol pingre), a zárat viszont csak a mentések végén engedi el.
+    # Amíg tartja, az új példány rögtön kilépne – ezért megvárjuk.
+    while tartja_meg_valaki(cfgmod.path(cfgmod.PID_NAME)) and time.time() < deadline:
+        time.sleep(0.25)
+        if ping():
+            return True
     cmd = [python_executable(), "-m", "torrentdl", "daemon", "run"]
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -107,7 +124,6 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
             env=env,
             start_new_session=True,
         )
-    deadline = time.time() + wait
     while time.time() < deadline:
         if ping(timeout=1.0):
             return True
@@ -140,7 +156,10 @@ def stop_daemon(wait: float = 20.0) -> bool:
         request(cfgmod.read_endpoint(), "shutdown")
     deadline = time.time() + wait
     while time.time() < deadline:
-        if not ping(timeout=1.0):
+        # A ping elnémulása még nem jelenti, hogy a démon el is engedte a
+        # zárat: a mentések utána következnek. Egy azonnal induló új példány
+        # ilyenkor kilépne, ezért a folyamat tényleges kilépését várjuk meg.
+        if not ping(timeout=1.0) and not tartja_meg_valaki(cfgmod.path(cfgmod.PID_NAME)):
             return True
         time.sleep(0.25)
     return False
@@ -183,9 +202,15 @@ def load_source(source: str) -> dict:
         try:
             # A séma fentebb ellenőrizve (csak http/https), ezért biztonságos.
             with urllib.request.urlopen(source, timeout=30) as response:  # noqa: S310
-                data = response.read()
+                # Eggyel többet kérünk a határnál: így kiderül, ha túllóg.
+                data = response.read(MAX_TORRENT_BYTES + 1)
         except OSError as exc:
             raise SourceError(f"nem sikerült letölteni a .torrent fájlt: {exc}") from exc
+        if len(data) > MAX_TORRENT_BYTES:
+            raise SourceError(
+                "a megadott URL túl nagy fájlt ad vissza ehhez "
+                f"({_meret(MAX_TORRENT_BYTES)} a határ) – biztosan .torrent fájlra mutat?"
+            )
         if not data.startswith(b"d"):
             raise SourceError("a megadott URL nem .torrent fájlt adott vissza")
         return {
@@ -198,6 +223,11 @@ def load_source(source: str) -> dict:
     path = Path(source).expanduser()
     if not path.is_file():
         raise SourceError(f"nincs ilyen fájl: {source}")
+    if path.stat().st_size > MAX_TORRENT_BYTES:
+        raise SourceError(
+            f"ez a fájl túl nagy .torrent fájlnak ({_meret(MAX_TORRENT_BYTES)} a határ): "
+            f"{path.name}"
+        )
     data = path.read_bytes()
     if not data.startswith(b"d"):
         raise SourceError(f"ez nem .torrent fájl: {path.name}")
@@ -216,7 +246,9 @@ def torrent_name(data: bytes) -> str:
         # Csak a név kiírásához kell; a parancssor enélkül is működik.
         import libtorrent as lt  # noqa: PLC0415
 
-        return lt.torrent_info(lt.bdecode(data)).name()
+        # A kötés a kibontott (bdecode-olt) szerkezetet is elfogadja,
+        # a típusleírás viszont csak a nyers bájtokat ismeri.
+        return lt.torrent_info(cast("Any", lt.bdecode(data))).name()
     except Exception:
         return ""
 
