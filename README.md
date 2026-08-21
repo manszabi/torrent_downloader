@@ -97,6 +97,9 @@ parancssori rész tkinter nélkül is működik.
   dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés. Ha nincs
   aktív letöltés, a bezárással a háttérdémon is kilép (nem várja meg a
   tétlenségi idő leteltét).
+- A befejezett letöltésről szóló felirat csak a program futása alatt látszik.
+  Ha a fájlok elkészültek és nincs bekapcsolva a letöltés utáni megosztás,
+  a következő indításkor a felület alapállapotból indul.
 
 ## Használat parancssorból
 
@@ -222,6 +225,8 @@ végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
   - `resume.dat` – a libtorrent folytatási adata (melyik darab van meg)
   - `current.torrent` – a torrent metaadatának másolata, hogy magnet link is folytatható legyen
   - `session.state` – DHT-node gyorsítótár, `last.json` – az utolsó befejezett letöltés
+    (csak amíg a démon fut: leálláskor törlődik, hogy egy újranyitás ne a régi,
+    kész torrenttel fogadjon)
   - `daemon.log` – napló, `daemon.lock` – egypéldány-zár, `daemon.endpoint` – port és jelszó
 - Amikor a letöltés eléri a 100%-ot, a program `force_recheck`-kel újraellenőrzi az összes
   darabot. Ha minden ép: a torrentet eltávolítja a session-ből, törli a munkaállományokat,

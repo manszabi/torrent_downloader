@@ -466,6 +466,15 @@ def main() -> int:
         assert (dest / "csomag" / "adat.bin").exists()
         text = run(home, "status").stdout
         assert "Nincs aktív letöltés" in text, text
+        assert "Utoljára befejezve" in text, text
+
+        # A kész letöltés adata a démonnal együtt jár le: a program
+        # újranyitásakor ne a régi, kész torrent fogadjon.
+        run(home, "daemon", "stop")
+        assert not (home / "last.json").exists(), "a kész letöltés adata megmaradt"
+        text = run(home, "status").stdout
+        assert "Utoljára befejezve" not in text, text
+        assert "Nincs aktív letöltés" in text, text
 
     check("kész fájlok: ellenőrzés után alapállapot", test_complete)
 

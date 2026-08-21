@@ -212,7 +212,12 @@ class Daemon:
             self.cfg["listen_port"],
         )
 
-        self._last_info = cfgmod.read_json(self.last_path)
+        # A legutóbb befejezett letöltés adatát szándékosan NEM olvassuk vissza:
+        # az csak a démon életéig érdekes. Ha a fájlok megvannak és nincs
+        # megosztás, a program újranyitásakor már nincs mit kezdeni vele – ne az
+        # utolsó kész torrent fogadja a felhasználót. Egy korábbi példány (pl.
+        # összeomlás) után maradt fájlt is eltakarítunk.
+        self._last_takaritas()
         self._restore_job()
         try:
             while self.running:
@@ -232,6 +237,11 @@ class Daemon:
             listener.close()
             self._shutdown()
         return 0
+
+    def _last_takaritas(self) -> None:
+        """A befejezett letöltés lemezre mentett adatának törlése."""
+        with contextlib.suppress(OSError):
+            self.last_path.unlink()
 
     def _on_signal(self, signum, _frame):
         log.info("jel érkezett (%s), leállás", signum)
@@ -266,6 +276,9 @@ class Daemon:
                 )
             except Exception:
                 log.exception("session állapot mentése sikertelen")
+        # A befejezett letöltés adata a démonnal együtt jár le: a következő
+        # induláskor a felület alapállapotból indul, nem a régi, kész torrenttel.
+        self._last_takaritas()
         with contextlib.suppress(OSError):
             self.endpoint_path.unlink()
         self.lock.release()
