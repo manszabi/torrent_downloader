@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 from pathlib import Path
 from typing import IO
@@ -16,6 +17,21 @@ if sys.platform == "win32":  # pragma: no cover - Windowson fut
     import msvcrt
 else:
     import fcntl
+
+
+def read_pid(path: Path) -> int | None:
+    """A zárfájlba írt folyamatazonosító, vagy None, ha nincs / olvashatatlan.
+
+    Windowson a zárolt első bájtot nem lehet felülírni, ezért a szám előtt egy
+    kitöltő bájt áll (lásd `_write_pid`). A számjegyeket ezért keresve olvassuk
+    ki, nem a fájl teljes tartalmát alakítjuk számmá.
+    """
+    try:
+        nyers = Path(path).read_text(errors="replace")
+    except OSError:
+        return None
+    talalat = re.search(r"\d+", nyers)
+    return int(talalat.group()) if talalat else None
 
 
 class SingleInstanceLock:

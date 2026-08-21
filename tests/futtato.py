@@ -13,6 +13,8 @@ vannak; enélkül ezek a sorok "kihagyva" jelzéssel jelennek meg:
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
 import subprocess
 import sys
@@ -20,19 +22,30 @@ from pathlib import Path
 
 ITT = Path(__file__).resolve().parent
 
+# Windowson az átirányított kimenet a rendszer régi kódlapját használná
+# (cp1252), az pedig nem ismeri az "ő"-t: a futtató a saját fejlécén szállna
+# el. A gyerekfolyamatokra a PYTHONIOENCODING vonatkozik.
+for _folyam in (sys.stdout, sys.stderr):
+    with contextlib.suppress(Exception):
+        _folyam.reconfigure(encoding="utf-8", errors="replace")
+KORNYEZET = dict(os.environ, PYTHONIOENCODING="utf-8:replace")
+
 
 def futtat(nev: str, parancs: list[str]) -> str:
     print("\n" + "=" * 70)
     print(f"  {nev}")
     print("=" * 70)
-    proc = subprocess.run(parancs, cwd=str(ITT.parent), check=False)
+    proc = subprocess.run(parancs, cwd=str(ITT.parent), env=KORNYEZET, check=False)
     return "rendben" if proc.returncode == 0 else "HIBA"
 
 
 def eszkoz_parancs(modul: str) -> list[str] | None:
     """Az ellenőrző indítása: modulként vagy a PATH-ról, ha van."""
     modulkent = [sys.executable, "-m", modul]
-    if subprocess.run([*modulkent, "--version"], capture_output=True, check=False).returncode == 0:
+    ellenorzes = subprocess.run(
+        [*modulkent, "--version"], capture_output=True, env=KORNYEZET, check=False
+    )
+    if ellenorzes.returncode == 0:
         return modulkent
     utvonal = shutil.which(modul)
     return [utvonal] if utvonal else None

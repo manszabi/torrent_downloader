@@ -27,6 +27,11 @@ import libtorrent as lt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from torrentdl import lock as lock_modul  # noqa: E402
+from torrentdl.format import kimenet_utf8  # noqa: E402
+
+kimenet_utf8()
+
 FAILURES = []
 
 
@@ -88,7 +93,7 @@ def check(name: str, fn):
 
 
 class HamisHibakod:
-    def __init__(self, ertek):
+    def __init__(self, ertek=0):
         self._ertek = ertek
 
     def value(self):
@@ -118,6 +123,116 @@ def test_hibafelismeres():
     assert engine._hely_hiba(HamisAlert(0, "There is not enough space on the disk"))
     assert not engine._hely_hiba(HamisAlert(errno_modul.EACCES, "permission denied"))
     assert not engine._hely_hiba(HamisAlert(0, "file not found"))
+
+
+class HamisSession:
+    """Amit a fő ciklus időzített része kér a sessiontől."""
+
+    def post_session_stats(self):
+        pass
+
+    def pop_alerts(self):
+        return []
+
+
+class HamisHash:
+    def get_best(self):
+        return "0" * 40
+
+
+class HamisAllapot:
+    """A torrent_handle.status() mezői, amiket a démon megkérdez."""
+
+    def __init__(self):
+        # Nem "ellenőrzés" állapot: a félbehagyott ellenőrzés kiértékelése
+        # pont ilyenkor futna le a hibás változatban.
+        self.state = lt.torrent_status.states.downloading
+        self.progress = 0.5          # a leállított ellenőrzés hiányosnak látszik
+        self.has_metadata = False    # így a folytatási adat mentése kimarad
+        self.errc = HamisHibakod()
+        self.name = "teszt"
+        self.info_hashes = HamisHash()
+        self.total_wanted = 1000
+        self.total_wanted_done = 500
+        self.total_done = 500
+        self.download_payload_rate = 0
+        self.upload_payload_rate = 0
+        self.total_payload_upload = 0
+        self.num_peers = 0
+        self.num_seeds = 0
+        self.num_pieces = 0
+
+
+class HamisHandle:
+    """Annyit tud, amennyit a szüneteltetés és a folytatás megkérdez tőle."""
+
+    def __init__(self):
+        self.hivasok = []
+
+    def is_valid(self):
+        return True
+
+    def status(self):
+        return HamisAllapot()
+
+    def __getattr__(self, nev):
+        def naplozo(*_a, **_kw):
+            self.hivasok.append(nev)
+
+        return naplozo
+
+
+def test_szunet_ellenorzes_kozben():
+    """Ellenőrzés közben megnyomott Szünet: a szünetnek meg kell maradnia.
+
+    Korábban a félbehagyott ellenőrzést a program kiértékelte. A leállított
+    torrent haladása hiányosnak látszik, ezért "sérült adatot" hitt, a
+    szünetet felülírva letöltésre váltott, és magától újraindult.
+    """
+    from torrentdl import engine
+
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-szunet-"))
+    regi_home = os.environ.get("TORRENTDL_HOME")
+    os.environ["TORRENTDL_HOME"] = str(munka / "home")
+    try:
+        cel = munka / "cel"
+        cel.mkdir()
+        daemon = engine.Daemon.__new__(engine.Daemon)  # session és zár nélkül
+        engine.Daemon.__init__(daemon)
+        daemon.handle = HamisHandle()
+        daemon.ses = HamisSession()
+        daemon.job = {
+            "source": "teszt",
+            "source_type": "file",
+            "save_path": str(cel),
+            "state": engine.STATE_VERIFYING,
+            "recheck_reason": engine.OK_KERES,
+            "paused_until": None,
+        }
+        daemon.recheck = {"ok": engine.OK_KERES, "kezdet": time.time(), "latott": True}
+
+        daemon.cmd_pause({})
+        assert daemon.job["state"] == engine.STATE_PAUSED, daemon.job["state"]
+        assert daemon.recheck is None, "a szünet után nem maradhat futó ellenőrzés"
+        assert daemon.job.get("recheck_pending") == engine.OK_KERES
+
+        # A fő ciklus időzített hívása nem írhatja felül a szünetet.
+        daemon._periodic()
+        assert daemon.job["state"] == engine.STATE_PAUSED, (
+            f"a szünetet felülírta az ellenőrzés kiértékelése: {daemon.job['state']}"
+        )
+
+        # Folytatáskor viszont az elhalasztott ellenőrzés induljon el.
+        daemon._do_resume()
+        assert daemon.job["state"] == engine.STATE_VERIFYING, daemon.job["state"]
+        assert daemon.recheck is not None, "a folytatás nem indította újra az ellenőrzést"
+        assert "force_recheck" in daemon.handle.hivasok
+    finally:
+        if regi_home is None:
+            os.environ.pop("TORRENTDL_HOME", None)
+        else:
+            os.environ["TORRENTDL_HOME"] = regi_home
+        shutil.rmtree(munka, ignore_errors=True)
 
 
 def test_folyamat_inditas():
@@ -181,6 +296,7 @@ def main() -> int:
     check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
     check("session statisztika (DHT-számláló)", test_session_statisztika)
     check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
+    check("szüneteltetés ellenőrzés közben", test_szunet_ellenorzes_kozben)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
@@ -233,7 +349,8 @@ def main() -> int:
 
     # -------------------------------------------------- 3. összeomlás utáni folytatás
     def test_crash_resume():
-        pid = int((home / "daemon.lock").read_text().strip())
+        pid = lock_modul.read_pid(home / "daemon.lock")
+        assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
         wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
@@ -357,7 +474,8 @@ def main() -> int:
 
     def test_nem_tiszta_leallas():
         """Áramszünet-szerű leállás: induláskor mindent újraellenőriz."""
-        pid = int((home / "daemon.lock").read_text().strip())
+        pid = lock_modul.read_pid(home / "daemon.lock")
+        assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
         wait_for(lambda: not pid_alive(pid), timeout=20, what="a démon leállása")
 

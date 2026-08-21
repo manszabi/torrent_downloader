@@ -27,7 +27,9 @@ import libtorrent as lt  # noqa: E402
 
 from torrentdl import client  # noqa: E402
 from torrentdl import config as cfgmod  # noqa: E402
-from torrentdl.format import human_bytes, human_time  # noqa: E402
+from torrentdl.format import human_bytes, human_time, kimenet_utf8  # noqa: E402
+
+kimenet_utf8()
 from torrentdl.gui import App, gomb_allapotok, tcl_kornyezet  # noqa: E402
 
 HIBAK = []

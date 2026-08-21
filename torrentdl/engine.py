@@ -13,6 +13,7 @@ import signal
 import socket
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import libtorrent as lt
 
@@ -165,7 +166,7 @@ class Daemon:
 
         self.ses: lt.session | None = None
         self.port = 0
-        self.handle = None
+        self.handle: lt.torrent_handle | None = None
         self.job: dict | None = None
         self.running = True
         self._clean_exit = False  # csak rendes leállásnál lesz igaz
@@ -327,12 +328,13 @@ class Daemon:
                 params = lt.read_session_params(self.session_state.read_bytes())
                 merged = dict(params.settings)
                 merged.update(settings)
-                params.settings = merged
+                # A kötés szótárt is elfogad, a típusleírás csak settings_pack-et.
+                params.settings = cast("Any", merged)
             except Exception:
                 log.warning("a mentett session állapot sérült, új session indul")
                 params = None
         if params is None:
-            params = lt.session_params(settings)
+            params = lt.session_params(cast("Any", settings))
         ses = lt.session(params)
         log.info(
             "session kész: DHT=%s PEX=%s LSD=%s titkosítás=%s",
@@ -395,6 +397,10 @@ class Daemon:
             # a félbemaradt ellenőrzés a hozzáadáskori ellenőrzés után újraindul
             job["state"] = STATE_DOWNLOADING
         self.job = job
+        # A jelzést azonnal töröljük a lemezről is: ha a program most, indulás
+        # közben áll le csúnyán, a következő indulás ne higgye tiszta
+        # leállásnak (és így ne hagyja ki a teljes ellenőrzést).
+        self._flush_job()
         if not self._cel_elerheto():
             # Fontos, hogy ez a torrent hozzáadása ELŐTT dőljön el: különben a
             # libtorrent a hiányzó meghajtó helyén kezdene mappát/fájlt írni.
@@ -871,6 +877,16 @@ class Daemon:
         if self.job is None:
             raise ValueError("nincs aktív letöltés")
         seconds = request.get("seconds")
+        if self.recheck:
+            # Futó ellenőrzés közben is szabad szüneteltetni. A félbehagyott
+            # ellenőrzést nem szabad kiértékelni: a leállított torrent haladása
+            # ilyenkor hiányosnak látszik, a program "sérült adatot" hinne, és
+            # a szünetet felülírva magától újratöltésbe kezdene. Ezért az
+            # ellenőrzést elhalasztjuk a folytatásig.
+            self.job["recheck_pending"] = self.recheck["ok"]
+            self.job.pop("recheck_reason", None)
+            self.recheck = None
+            log.info("a futó ellenőrzés a folytatáskor indul újra")
         self.job["state"] = STATE_PAUSED
         self.job["paused_until"] = time.time() + float(seconds) if seconds else None
         if self.handle is not None and self.handle.is_valid():

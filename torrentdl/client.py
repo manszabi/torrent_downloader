@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 from . import config as cfgmod
 from .protocol import DaemonError, NotRunning, request
@@ -216,7 +217,9 @@ def torrent_name(data: bytes) -> str:
         # Csak a név kiírásához kell; a parancssor enélkül is működik.
         import libtorrent as lt  # noqa: PLC0415
 
-        return lt.torrent_info(lt.bdecode(data)).name()
+        # A kötés a kibontott (bdecode-olt) szerkezetet is elfogadja,
+        # a típusleírás viszont csak a nyers bájtokat ismeri.
+        return lt.torrent_info(cast("Any", lt.bdecode(data))).name()
     except Exception:
         return ""
 

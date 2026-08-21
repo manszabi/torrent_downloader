@@ -255,7 +255,8 @@ mypy torrentdl
   alapállapotba állás, szüneteltetés időzítéssel, `SIGKILL` utáni folytatás,
   törlés a fájlokkal, megosztás újraindítás után, **sérült fájl felismerése és
   újratöltése**, nem tiszta leállás utáni ellenőrzés, leválasztott meghajtó,
-  valamint a hibafelismerés és a session-statisztika egységtesztjei.
+  valamint a hibafelismerés, a session-statisztika és az ellenőrzés közbeni
+  szüneteltetés egységtesztjei.
 - `tests/gui_test.py` – valódi Tk ablakkal: indítás, hibás forrás kezelése,
   gombok engedélyezése, szünet/folytatás, törlés (Linuxon `xvfb-run` kell hozzá,
   a futtató magától használja).

@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
+import sys
 import time
+
+
+def kimenet_utf8() -> None:
+    """A kimenet elbírja az ékezeteket átirányítás esetén is.
+
+    Windowson a képernyőre írás UTF-8-cal megy, de ha a kimenet fájlba vagy
+    csővezetékbe megy, a Python a rendszer régi kódlapját használja (cp1252),
+    az pedig nem ismeri az "ő"-t és a "ű"-t – a program ilyenkor
+    UnicodeEncodeError-ral elszállna. Ezért UTF-8-ra állítjuk; ami mégsem
+    kiírható, az kérdőjel lesz a hibás leállás helyett.
+    """
+    for folyam in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):  # pragma: no cover - régi/pótolt folyam
+            folyam.reconfigure(encoding="utf-8", errors="replace")
+
 
 DURATION_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[smhd]?)", re.IGNORECASE)
 UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}
