@@ -93,13 +93,26 @@ def status(home: Path) -> dict:
     return {"job": job, "last": last}
 
 
-def wait_for(predicate, timeout=60, interval=0.5, what=""):
+def wait_for(predicate, timeout=60, interval=0.5, what="", home=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
             return True
         time.sleep(interval)
-    raise AssertionError(f"időtúllépés: {what}")
+    # Az időtúllépés önmagában semmit nem árul el. Ha megkaptuk az
+    # adatkönyvtárat, kiírjuk, milyen állapotban ragadt a munka, és mit írt
+    # közben a démon – e nélkül egy másik rendszeren (pl. a CI Windows-ágán)
+    # nem lehet kideríteni, mi történt.
+    reszletek = ""
+    if home is not None:
+        job = status(home)["job"] or {}
+        reszletek = (
+            f"\n  a munka állapota: {job.get('state')!r}"
+            f" (haladás: {job.get('progress')!r},"
+            f" ellenőrzés oka: {job.get('recheck_reason')!r},"
+            f" hiba: {job.get('error')!r})" + naplo_reszlet(home)
+        )
+    raise AssertionError(f"időtúllépés: {what}{reszletek}")
 
 
 def check(name: str, fn):
@@ -391,6 +404,7 @@ def main() -> int:
             lambda: status(home)["job"] is None and status(home)["last"] is not None,
             timeout=60,
             what="a letöltés befejeződése és alapállapotba állás",
+            home=home,
         )
         last = status(home)["last"]
         assert last["verified"] is True, last
@@ -408,7 +422,7 @@ def main() -> int:
         torrent = make_torrent(src, work / "fut.torrent")
         dest = work / "cel-fut"
         run(home, "add", str(torrent), "-d", str(dest))
-        wait_for(lambda: status(home)["job"] is not None, what="a letöltés megjelenése")
+        wait_for(lambda: status(home)["job"] is not None, what="a letöltés megjelenése", home=home)
         run(home, "pause", "--for", "5s")
         assert status(home)["job"]["state"] == "paused"
         assert status(home)["job"]["paused_until"] is not None
@@ -416,6 +430,7 @@ def main() -> int:
             lambda: status(home)["job"]["state"] == "downloading",
             timeout=30,
             what="automatikus folytatás a szünet lejártakor",
+            home=home,
         )
         run(home, "pause")
         assert status(home)["job"]["state"] == "paused"
@@ -429,7 +444,12 @@ def main() -> int:
         pid = lock_modul.read_pid(home / "daemon.lock")
         assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
-        wait_for(lambda: not lock_modul.pid_alive(pid), timeout=20, what="a démon leállása")
+        wait_for(
+            lambda: not lock_modul.pid_alive(pid),
+            timeout=20,
+            what="a démon leállása",
+            home=home,
+        )
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
         assert "megszakadt" in text, text
@@ -438,6 +458,7 @@ def main() -> int:
             lambda: status(home)["job"]["state"] == "downloading",
             timeout=30,
             what="folytatás összeomlás után",
+            home=home,
         )
 
     check("összeomlás utáni folytatás", test_crash_resume)
@@ -471,6 +492,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a megosztásba lépés a letöltés után",
+            home=home,
         )
         assert status(home)["last"]["verified"] is True
 
@@ -491,6 +513,7 @@ def main() -> int:
             and status(home)["job"]["save_path"].endswith("cel-megoszt2"),
             timeout=30,
             what="az új letöltés indulása megosztás közben",
+            home=home,
         )
         run(home, "cancel", "-y")
         # A megosztott fájlok a helyükön maradtak.
@@ -518,6 +541,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a kész torrent megosztásba lépése",
+            home=home,
         )
         fajl = dest / src.name / "adat.bin"
         romlas["fajl"] = fajl
@@ -533,6 +557,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "downloading",
             timeout=90,
             what="a sérült darab felismerése",
+            home=home,
         )
         job = status(home)["job"]
         assert job["progress"] < 1.0, "a program épnek hitte a sérült fájlt"
@@ -545,6 +570,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=90,
             what="az ép fájl elfogadása",
+            home=home,
         )
 
     check("sérült fájl felismerése és újratöltése", test_serult_adat)
@@ -554,7 +580,12 @@ def main() -> int:
         pid = lock_modul.read_pid(home / "daemon.lock")
         assert pid is not None, "nincs folyamatazonosító a zárfájlban"
         kegyetlen_leallitas(pid)
-        wait_for(lambda: not lock_modul.pid_alive(pid), timeout=20, what="a démon leállása")
+        wait_for(
+            lambda: not lock_modul.pid_alive(pid),
+            timeout=20,
+            what="a démon leállása",
+            home=home,
+        )
 
         # Amíg a program áll, "elromlik" a lemezen az adat.
         fajl = romlas["fajl"]
@@ -567,6 +598,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "downloading",
             timeout=90,
             what="indulási ellenőrzés a nem tiszta leállás után",
+            home=home,
         )
         job = status(home)["job"]
         assert job["progress"] < 1.0, "a program a mentett állapotot hitte el a lemez helyett"
@@ -593,6 +625,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "seeding",
             timeout=60,
             what="a megosztásba lépés",
+            home=home,
         )
 
         # "Leválasztjuk a meghajtót": a célmappa eltűnik, amíg a program áll.
@@ -603,6 +636,7 @@ def main() -> int:
             lambda: (status(home)["job"] or {}).get("state") == "error",
             timeout=30,
             what="a hiányzó célmappa felismerése",
+            home=home,
         )
         job = status(home)["job"]
         assert "célmappa" in (job.get("error") or ""), job
@@ -616,6 +650,7 @@ def main() -> int:
             in ("seeding", "verifying", "downloading"),
             timeout=60,
             what="folytatás a meghajtó visszacsatlakoztatása után",
+            home=home,
         )
         run(home, "cancel", "-y")
         run(home, "config", "--set", "seed_after_complete=false")

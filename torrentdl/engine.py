@@ -370,20 +370,30 @@ class Daemon:
                 log.warning("a folytatási adat sérült, elölről indul az ellenőrzés")
                 atp = None
         if atp is None:
-            if job["source_type"] == "magnet":
-                atp = lt.parse_magnet_uri(job["source"])
-            else:
-                try:
-                    atp = lt.add_torrent_params()
-                    atp.ti = lt.torrent_info(str(self.torrent_copy))
-                except Exception:
-                    # A mentett .torrent másolat sérült vagy hiányzik: ha az
-                    # eredeti fájl megvan, onnan olvassuk újra.
-                    log.warning("a mentett .torrent nem olvasható, az eredetit próbálom")
-                    atp = lt.add_torrent_params()
-                    atp.ti = lt.torrent_info(job["source"])
+            atp = self._atp_metaadatbol(job)
         atp.save_path = job["save_path"]
         atp.flags = self._torrent_flags(atp.flags, job["state"] == STATE_PAUSED)
+        return atp
+
+    def _atp_metaadatbol(self, job: dict):
+        """Torrent-adatok folytatási adat nélkül (a metaadatot megtartva).
+
+        A mentett .torrent másolat magnet linknél is megvan, ha a metaadat
+        egyszer már megérkezett – így egy teljes ellenőrzéshez nem kell újra
+        letölteni a hálózatról.
+        """
+        if self.torrent_copy.exists():
+            try:
+                atp = lt.add_torrent_params()
+                atp.ti = lt.torrent_info(str(self.torrent_copy))
+            except Exception:
+                log.warning("a mentett .torrent nem olvasható, a forrást próbálom")
+            else:
+                return atp
+        if job["source_type"] == "magnet":
+            return lt.parse_magnet_uri(job["source"])
+        atp = lt.add_torrent_params()
+        atp.ti = lt.torrent_info(job["source"])
         return atp
 
     def _restore_job(self) -> None:
@@ -409,8 +419,17 @@ class Daemon:
                 "meghajtót, majd nyomd meg a Folytatás gombot"
             )
             return
+        # Nem tiszta leállás után a mentett folytatási adat azt állíthatja, hogy
+        # minden darab megvan – pedig a lemezen lévő adat sérülhetett. Ha ilyenkor
+        # a folytatási adattal adnánk hozzá a torrentet, a teljes ellenőrzés csak
+        # a force_recheck-en múlna, és ha az elkésik, a program a hibás adatot
+        # épnek hinné. Ezért ilyenkor eleve folytatási adat nélkül adjuk hozzá:
+        # a libtorrentnek így muszáj minden darabot újrahasholnia.
+        kell_teljes_ellenorzes = not tiszta_leallas and bool(self.cfg["verify_after_crash"])
         try:
-            self.handle = self.ses.add_torrent(self._build_atp(job))
+            self.handle = self.ses.add_torrent(
+                self._build_atp(job, use_resume=not kell_teljes_ellenorzes)
+            )
         except Exception as exc:
             log.exception("a mentett letöltés visszaállítása sikertelen")
             self.job["state"] = STATE_ERROR
