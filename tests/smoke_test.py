@@ -11,7 +11,6 @@ Futtatás:  python3 tests/smoke_test.py
 
 from __future__ import annotations
 
-import json
 import os
 import random
 import shutil
@@ -27,6 +26,7 @@ import libtorrent as lt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from torrentdl import config as cfgmod  # noqa: E402
 from torrentdl import lock as lock_modul  # noqa: E402
 from torrentdl.format import kimenet_utf8  # noqa: E402
 
@@ -83,14 +83,12 @@ def make_payload(directory: Path, size: int) -> None:
 
 
 def status(home: Path) -> dict:
-    # A fájlokat a cfgmod UTF-8-ban írja; a rendszer kódlapja Windowson mást adna.
-    def olvas(nev):
-        ut = home / nev
-        return json.loads(ut.read_text(encoding="utf-8")) if ut.exists() else None
-
-    job = olvas("job.json")
-    last = olvas("last.json")
-    return {"job": job, "last": last}
+    # Ugyanazzal az olvasóval, amit a program használ: UTF-8, és elviseli, ha a
+    # fájlt épp atomi cserével írják felül (Windowson ez hibát adhatna).
+    return {
+        "job": cfgmod.read_json(home / "job.json"),
+        "last": cfgmod.read_json(home / "last.json"),
+    }
 
 
 def wait_for(predicate, timeout=60, interval=0.5, what="", home=None):

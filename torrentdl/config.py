@@ -8,6 +8,7 @@ import os
 import secrets
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 DEFAULT_CONFIG = {
@@ -118,7 +119,17 @@ def write_atomic(target: Path, data: bytes, durable: bool = True) -> None:
             fh.flush()
             if durable:
                 os.fsync(fh.fileno())
-        Path(tmp).replace(target)
+        # A csere is elbukhat, ha a célfájlt épp olvassa valaki (Windowson a
+        # megnyitott fájlt nem lehet felülírni). Ez múló állapot, megvárjuk.
+        for maradek_probalkozas in (4, 3, 2, 1, 0):
+            try:
+                Path(tmp).replace(target)
+            except PermissionError:  # noqa: PERF203 - újrapróbálkozás, nem forró ciklus
+                if not maradek_probalkozas:
+                    raise
+                time.sleep(0.05)
+            else:
+                break
         # A névcsere is elveszhet áramszünetnél, ha a könyvtár bejegyzése nem
         # került ki a lemezre. Windowson erre nincs mód, ott az os.replace
         # önmagában is atomi.
@@ -145,11 +156,26 @@ def write_json(target: Path, obj, durable: bool = True) -> None:
 
 
 def read_json(target: Path, default=None):
-    try:
-        with target.open("rb") as fh:
-            return json.loads(fh.read().decode("utf-8"))
-    except (OSError, ValueError):
-        return default
+    """JSON beolvasása; hiba esetén az alapértelmezett érték.
+
+    Windowson egy éppen zajló atomi csere (lásd `write_atomic`) pillanatában a
+    fájl megnyitása "hozzáférés megtagadva" hibát adhat, pedig a fájl ott van és
+    ép. Ilyenkor rövid szünettel újrapróbáljuk – enélkül a felület egy villanásra
+    azt hinné, hogy nincs is letöltés.
+    """
+    for maradek_probalkozas in (2, 1, 0):
+        try:
+            with target.open("rb") as fh:
+                return json.loads(fh.read().decode("utf-8"))
+        except FileNotFoundError:  # noqa: PERF203 - újrapróbálkozás, nem forró ciklus
+            return default  # nincs ilyen fájl: ezen az újrapróbálás nem segít
+        except PermissionError:
+            if not maradek_probalkozas:
+                return default
+            time.sleep(0.05)
+        except (OSError, ValueError):
+            return default
+    return default  # pragma: no cover - a ciklus mindig visszatér
 
 
 def load_config() -> dict:
