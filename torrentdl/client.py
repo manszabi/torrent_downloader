@@ -18,7 +18,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import config as cfgmod
+from .format import human_bytes as _meret
 from .protocol import DaemonError, NotRunning, request
+
+# Egy .torrent fájl a gyakorlatban néhány száz kilobájt. A felső határ azért
+# kell, mert a tartalom base64-ként megy át a vezérlőcsatornán, aminek 16 MB a
+# korlátja – e nélkül egy rossz URL (pl. egy nagy telepítőkép) előbb teljesen
+# beolvasódna a memóriába, és csak utána derülne ki, hogy nem is .torrent.
+MAX_TORRENT_BYTES = 8 * 1024 * 1024
 
 DAEMON_START_TIMEOUT = 25.0
 
@@ -184,9 +191,15 @@ def load_source(source: str) -> dict:
         try:
             # A séma fentebb ellenőrizve (csak http/https), ezért biztonságos.
             with urllib.request.urlopen(source, timeout=30) as response:  # noqa: S310
-                data = response.read()
+                # Eggyel többet kérünk a határnál: így kiderül, ha túllóg.
+                data = response.read(MAX_TORRENT_BYTES + 1)
         except OSError as exc:
             raise SourceError(f"nem sikerült letölteni a .torrent fájlt: {exc}") from exc
+        if len(data) > MAX_TORRENT_BYTES:
+            raise SourceError(
+                "a megadott URL túl nagy fájlt ad vissza ehhez "
+                f"({_meret(MAX_TORRENT_BYTES)} a határ) – biztosan .torrent fájlra mutat?"
+            )
         if not data.startswith(b"d"):
             raise SourceError("a megadott URL nem .torrent fájlt adott vissza")
         return {
@@ -199,6 +212,11 @@ def load_source(source: str) -> dict:
     path = Path(source).expanduser()
     if not path.is_file():
         raise SourceError(f"nincs ilyen fájl: {source}")
+    if path.stat().st_size > MAX_TORRENT_BYTES:
+        raise SourceError(
+            f"ez a fájl túl nagy .torrent fájlnak ({_meret(MAX_TORRENT_BYTES)} a határ): "
+            f"{path.name}"
+        )
     data = path.read_bytes()
     if not data.startswith(b"d"):
         raise SourceError(f"ez nem .torrent fájl: {path.name}")

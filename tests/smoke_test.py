@@ -182,6 +182,29 @@ class HamisHandle:
         return naplozo
 
 
+def test_forras_meret_hatar():
+    """Túl nagy fájl nem mehet át a vezérlőcsatornán: előbb derüljön ki."""
+    from torrentdl import client
+
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-forras-"))
+    try:
+        nagy = munka / "nagy.torrent"
+        with nagy.open("wb") as fh:
+            fh.write(b"d")
+            fh.truncate(client.MAX_TORRENT_BYTES + 1)
+        try:
+            client.load_source(str(nagy))
+            raise AssertionError("a túl nagy fájlt el kellett volna utasítani")
+        except client.SourceError as exc:
+            assert "túl nagy" in str(exc), exc
+
+        kicsi = munka / "kicsi.torrent"
+        kicsi.write_bytes(b"d3:foo3:bare")
+        assert client.load_source(str(kicsi))["source_type"] == "file"
+    finally:
+        shutil.rmtree(munka, ignore_errors=True)
+
+
 def test_szunet_ellenorzes_kozben():
     """Ellenőrzés közben megnyomott Szünet: a szünetnek meg kell maradnia.
 
@@ -297,6 +320,7 @@ def main() -> int:
     check("session statisztika (DHT-számláló)", test_session_statisztika)
     check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
     check("szüneteltetés ellenőrzés közben", test_szunet_ellenorzes_kozben)
+    check("forrás méretkorlátja", test_forras_meret_hatar)
     port = random.randint(20000, 40000)
     run(home, "config", "--set", f"listen_port={port}", "--set", "idle_timeout=30")
 
