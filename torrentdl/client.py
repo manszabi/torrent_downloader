@@ -10,6 +10,7 @@ import contextlib
 import os
 import subprocess
 import sys
+import sysconfig
 import time
 import urllib.parse
 import urllib.request
@@ -42,20 +43,23 @@ def ping(timeout: float = 2.0):
 # Windows folyamat-indítási jelzők. A subprocess csak Windowson definiálja
 # őket, ezért a dokumentált számértéket írjuk ide – így máshol is tesztelhető.
 #
-# Miért nem a CREATE_NO_WINDOW? Mert azt a Windows csak KONZOLOS programra
-# alkalmazza ("The process is a console application that is being run without
-# a console window"): a démont viszont a grafikus alkalmazásnak számító
-# pythonw.exe indítja, amire a jelző nem vonatkozik. A gyermek ilyenkor
-# megörökli a szülő konzolját – és ha annak az ablaka el volt rejtve (az indító
-# elrejti, amint megnyílik a felület), a Windows a folyamat indításakor
-# visszahozza, immár a gyermek nevével a címsorában. Ez ugrott a felület elé
-# "…\.venv\Scripts\pythonw.exe" címmel, például minden beállítás-mentés után,
-# amikor a démon újraindul.
+# Melyiket mikor? A Windows kétféle programot ismer: a KONZOLOS (python.exe) és
+# a grafikus (pythonw.exe) alkalmazást.
 #
-# A DETACHED_PROCESS az egyetlen jelző, ami mindkét fajta programra kimondja:
-# a gyermek NEM örökli a szülő konzolját, és újat sem nyit helyette. A kettő
-# egymást kizárja (DETACHED_PROCESS mellett a Windows eldobja a
-# CREATE_NO_WINDOW-t), ezért a DETACHED_PROCESS-t használjuk önmagában.
+# - DETACHED_PROCESS: a gyermek nem örökli a szülő konzolját, és nem is kap
+#   újat. Ez kell akkor, ha a gyermek valóban grafikus program (pythonw.exe):
+#   így semmilyen konzolablak nem keletkezik, és a szülő (esetleg elrejtett)
+#   konzolablakát sem hozza vissza a Windows.
+# - CREATE_NO_WINDOW: a gyermek kap konzolt, csak ablak nélkül. Ezt a Windows
+#   viszont eldobja, ha a program nem konzolos ("This flag is ignored if the
+#   application is not a console application"). Akkor jó, ha a gyermek konzolos
+#   Python: az örökölt, ablak nélküli konzolt az általa indított folyamatok is
+#   megkapják, tehát végig nem villan fel semmi.
+#
+# Ha a rossz párosítást választjuk, konzolablak nyílik: leválasztott (konzol
+# nélküli) szülőből indított KONZOLOS program ugyanis kap egy vadonatúj,
+# látható konzolablakot – ez ugrott a felület elé, és maradt ott a letöltés
+# végéig (lásd a daemon_python() magyarázatát).
 #
 # A CREATE_NEW_PROCESS_GROUP azt zárja ki, hogy egy konzolban leütött Ctrl+C
 # a háttérben futó démont is leállítsa.
@@ -63,12 +67,24 @@ CREATE_NO_WINDOW = 0x08000000
 DETACHED_PROCESS = 0x00000008
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
+# A virtuális környezet ebben a fájlban írja le, melyik telepítésből készült.
+VENV_CFG = "pyvenv.cfg"
 
-def indito_jelzok(windows: bool | None = None) -> int:
-    """A gyermekfolyamat indítási jelzői (Windowson konzol nélkül, leválasztva)."""
+
+def indito_jelzok(windows: bool | None = None, valodi_pythonw: bool = True) -> int:
+    """A gyermekfolyamat indítási jelzői (Windowson konzolablak nélkül).
+
+    `valodi_pythonw`: sikerült-e a valódi, grafikus pythonw.exe-t megtalálni.
+    Ha nem (marad a konzolos python.exe vagy a .venv átirányítója), akkor nem
+    szabad leválasztani – ott az ablak nélküli konzol a helyes megoldás.
+    """
     if windows is None:
         windows = sys.platform == "win32"
-    return DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP if windows else 0
+    if not windows:
+        return 0
+    if valodi_pythonw:
+        return DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    return CREATE_NO_WINDOW
 
 
 def _rejtett_ablak_beallitas():
@@ -81,25 +97,97 @@ def _rejtett_ablak_beallitas():
     return info
 
 
-def python_executable(
-    alap: str | None = None,
-    windows: bool | None = None,
-    letezik: Callable[[Path], bool] = Path.is_file,
-) -> str:
-    """A démont konzol nélküli Pythonnal indítjuk.
+def _fajl_szoveg(ut: Path) -> str:
+    """A fájl tartalma, vagy üres szöveg, ha nem olvasható."""
+    try:
+        return ut.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
-    Windowson a `pythonw.exe` grafikus alkalmazásként indul: magától soha nem
-    nyit konzolablakot. Ettől még a szülő konzoljához hozzá lehetne kapcsolva –
-    ezt a DETACHED_PROCESS zárja ki (lásd fent). A kimenete nem hiányzik, mert
-    a démon a saját naplófájljába ír.
+
+def venv_alap_mappa(
+    prefix: str | None = None, olvaso: Callable[[Path], str] = _fajl_szoveg
+) -> str | None:
+    """A `pyvenv.cfg` "home" sora: melyik Python-telepítésből készült a .venv."""
+    szoveg = olvaso(Path(prefix if prefix is not None else sys.prefix) / VENV_CFG)
+    for sor in szoveg.splitlines():
+        kulcs, egyenlo, ertek = sor.partition("=")
+        if egyenlo and kulcs.strip().lower() == "home" and ertek.strip():
+            return ertek.strip()
+    return None
+
+
+def daemon_python(
+    windows: bool | None = None,
+    futo: str | None = None,
+    alap: str | None = None,
+    prefix: str | None = None,
+    letezik: Callable[[Path], bool] = Path.is_file,
+    olvaso: Callable[[Path], str] = _fajl_szoveg,
+) -> tuple[str, bool]:
+    """Melyik Pythonnal induljon a démon, és valódi-e a konzoltalan változat.
+
+    Windowson a `pythonw.exe` a grafikus (konzol nélküli) Python. A `.venv`
+    `Scripts` mappájában viszont nem ez van, hanem egy *átirányító*: az csak
+    megkeresi az alaptelepítés Pythonját, és azt indítja el gyermekfolyamatként.
+    A Python 3.13.0-ig ez az átirányító nem tudott a pythonw.exe létezéséről,
+    és mindig a KONZOLOS python.exe-t futtatta (CPython gh-126084, javítva a
+    3.13.1-ben). Emiatt a démonhoz konzolablak nyílt – ráadásul az eredeti
+    parancssorral a címsorában, ezért látszott ".venv\\Scripts\\pythonw.exe"
+    néven –, ami a felület elé ugrott, és a démon élete végéig ott is maradt
+    (az ablak bezárása után is, hiszen a letöltés szándékosan tovább fut).
+
+    Ezért az átirányítót kikerüljük: az alaptelepítés valódi `pythonw.exe`-jét
+    keressük meg (`sys._base_executable`, illetve a `pyvenv.cfg` "home" sora
+    alapján), és azt indítjuk. A `.venv` csomagjait – köztük a libtorrentet –
+    a `daemon_kornyezet()` adja hozzá a PYTHONPATH-on.
+
+    Visszatérés: (futtatandó Python, valódi grafikus pythonw.exe-e).
     """
-    futtatando = alap if alap is not None else sys.executable
+    futo = futo if futo is not None else sys.executable
     if windows is None:
         windows = sys.platform == "win32"
     if not windows:
-        return futtatando
-    jelolt = Path(futtatando).with_name("pythonw.exe")
-    return str(jelolt) if letezik(jelolt) else futtatando
+        return futo, False
+    alaputak = []
+    jelolt = alap if alap is not None else getattr(sys, "_base_executable", "")
+    if jelolt:
+        alaputak.append(Path(jelolt))
+    mappa = venv_alap_mappa(prefix, olvaso)
+    if mappa:
+        alaputak.append(Path(mappa) / "python.exe")
+    for ut in alaputak:
+        pythonw = ut.with_name("pythonw.exe")
+        if letezik(pythonw):
+            return str(pythonw), True
+    # Nincs meg az alaptelepítés: marad a .venv pythonw.exe-je (átirányító
+    # lehet, ezért nem "valódi"), végső soron a most futó Python.
+    sajat = Path(futo).with_name("pythonw.exe")
+    if letezik(sajat):
+        return str(sajat), False
+    return futo, False
+
+
+def daemon_kornyezet(
+    kornyezet: dict[str, str] | None = None,
+    csomagok: list[str] | None = None,
+    projekt: str | None = None,
+) -> dict[str, str]:
+    """A démon környezete: lássa a program fájljait és a .venv csomagjait.
+
+    Az alaptelepítés Pythonja nem tud a `.venv`-ről (nincs mellette
+    `pyvenv.cfg`), ezért a virtuális környezet csomagmappáit a PYTHONPATH-on
+    adjuk át neki – enélkül nem találná meg a libtorrentet.
+    """
+    env = dict(os.environ if kornyezet is None else kornyezet)
+    if csomagok is None:
+        csomagok = [
+            ut for ut in (sysconfig.get_path("purelib"), sysconfig.get_path("platlib")) if ut
+        ]
+    gyoker = projekt if projekt is not None else str(Path(__file__).resolve().parent.parent)
+    utak = [gyoker, *dict.fromkeys(csomagok), env.get("PYTHONPATH", "")]
+    env["PYTHONPATH"] = os.pathsep.join([u for u in utak if u])
+    return env
 
 
 def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
@@ -114,11 +202,9 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
         time.sleep(0.25)
         if ping():
             return True
-    cmd = [python_executable(), "-m", "torrentdl", "daemon", "run"]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(Path(__file__).resolve().parent.parent), env.get("PYTHONPATH", "")]
-    ).strip(os.pathsep)
+    futtatando, valodi_pythonw = daemon_python()
+    cmd = [futtatando, "-m", "torrentdl", "daemon", "run"]
+    env = daemon_kornyezet()
     # A démon a saját naplójába ír, a csatornái ezért mehetnek a semmibe.
     # (A gyermekfolyamat Windowson és Linuxon is túléli a szülő kilépését.)
     if sys.platform == "win32":  # pragma: no cover - Windowson fut
@@ -128,7 +214,7 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
-            creationflags=indito_jelzok(True),
+            creationflags=indito_jelzok(True, valodi_pythonw),
             startupinfo=_rejtett_ablak_beallitas(),
         )
     else:
@@ -278,12 +364,14 @@ __all__ = [
     "NotRunning",
     "SourceError",
     "call",
+    "daemon_kornyezet",
+    "daemon_python",
     "ensure_daemon",
     "fetch_status",
     "indito_jelzok",
     "load_source",
     "ping",
-    "python_executable",
     "spawn_daemon",
     "stop_daemon",
+    "venv_alap_mappa",
 ]

@@ -474,6 +474,12 @@ class App(tk.Tk):
             )
             if not folytat:
                 return
+        elif status and status.get("daemon"):
+            # Nincs mit csinálnia a háttérben: ne maradjon ott egy tétlen
+            # folyamat a tétlenségi idő leteltéig. Csak a kérést küldjük el, a
+            # kilépését nem várjuk meg – a mentéseivel már végzett.
+            with contextlib.suppress(Exception):
+                client.stop_daemon(wait=0)
         self.destroy()
 
 

@@ -322,30 +322,80 @@ def test_folyamat_inditas():
     """A háttérdémon indítási módja Windowson (konzolablak nélkül)."""
     from torrentdl import client
 
-    jelzok = client.indito_jelzok(windows=True)
-    # A démont a pythonw.exe indítja, ami grafikus alkalmazás: arra a Windows
-    # nem alkalmazza a CREATE_NO_WINDOW-t, a gyermek megörökölné a szülő
-    # (elrejtett) konzolját, és az a felület elé ugorna. A DETACHED_PROCESS az,
-    # ami kimondja: nincs örökölt konzol, és újat sem nyitunk.
+    # 1) Melyik Pythonnal induljon a démon?
+    #
+    # A .venv Scripts mappájában lévő pythonw.exe csak egy átirányító, ami az
+    # alaptelepítés Pythonját indítja - a 3.13.0-ig a KONZOLOS python.exe-t
+    # (CPython gh-126084). Ezért az alaptelepítés valódi pythonw.exe-jét
+    # keressük: elsőként a sys._base_executable mellett.
+    ut, valodi = client.daemon_python(
+        windows=True,
+        futo="/v/Scripts/python.exe",
+        alap="/py313/python.exe",
+        letezik=lambda p: True,
+        olvaso=lambda p: "",
+    )
+    assert (ut, valodi) == (str(Path("/py313/pythonw.exe")), True), (ut, valodi)
+
+    # Ha az nincs meg, a .venv pyvenv.cfg "home" sora mondja meg, hol keressük.
+    ut, valodi = client.daemon_python(
+        windows=True,
+        futo="/v/Scripts/python.exe",
+        alap="",
+        letezik=lambda p: "py313" in str(p),
+        olvaso=lambda p: "home = /py313\nversion = 3.13.0\n",
+    )
+    assert (ut, valodi) == (str(Path("/py313/pythonw.exe")), True), (ut, valodi)
+    assert client.venv_alap_mappa("/v", lambda p: "home = /py313\n") == "/py313"
+    assert client.venv_alap_mappa("/v", lambda p: "") is None
+
+    # Ha az alaptelepítés sehogy sem érhető el, marad a .venv pythonw.exe-je -
+    # de ez lehet a hibás átirányító, ezért nem "valódi".
+    ut, valodi = client.daemon_python(
+        windows=True, futo="/v/Scripts/python.exe", alap="", letezik=lambda p: True,
+        olvaso=lambda p: "",
+    )
+    assert (ut, valodi) == (str(Path("/v/Scripts/pythonw.exe")), False), (ut, valodi)
+
+    # Ha pythonw.exe sincs, a most futó Python marad (változatlan szövegként).
+    ut, valodi = client.daemon_python(
+        windows=True, futo="/v/Scripts/python.exe", alap="", letezik=lambda p: False,
+        olvaso=lambda p: "",
+    )
+    assert (ut, valodi) == ("/v/Scripts/python.exe", False), (ut, valodi)
+
+    # Windowson kívül nincs mit keresni.
+    assert client.daemon_python(windows=False, futo="/x/python3") == ("/x/python3", False)
+
+    # 2) Milyen jelzőkkel induljon?
+    #
+    # Valódi grafikus pythonw.exe: leválasztva, hogy se örökölt, se új konzol
+    # ne legyen. A CREATE_NO_WINDOW-t a Windows úgyis eldobná mellette (és
+    # grafikus programra amúgy sem vonatkozik).
+    jelzok = client.indito_jelzok(windows=True, valodi_pythonw=True)
     assert jelzok & client.DETACHED_PROCESS, hex(jelzok)
-    # A kettő egymást kizárja: a DETACHED_PROCESS mellett a CREATE_NO_WINDOW-t
-    # a Windows eldobja, ezért nem szabad ott lennie.
     assert not jelzok & client.CREATE_NO_WINDOW, hex(jelzok)
     # Ctrl+C egy konzolban ne állítsa le a háttérben futó démont.
     assert jelzok & client.CREATE_NEW_PROCESS_GROUP, hex(jelzok)
+
+    # Konzolos Python (vagy átirányító): NEM szabad leválasztani. A leválasztott
+    # szülőből induló konzolos program vadonatúj, LÁTHATÓ konzolablakot kapna;
+    # az ablak nélküli konzolt viszont a gyermekei is öröklik.
+    tartalek = client.indito_jelzok(windows=True, valodi_pythonw=False)
+    assert tartalek == client.CREATE_NO_WINDOW, hex(tartalek)
+
     assert client.indito_jelzok(windows=False) == 0, client.indito_jelzok(windows=False)
 
-    # Windowson a konzol nélküli pythonw.exe kell, ha van.
-    # Ha van pythonw.exe, az útvonal a Path-on megy át, és a rendszer
-    # elválasztójával jön vissza (Windowson visszaperjellel) – az elvárt
-    # értéket ezért ugyanúgy képezzük.
-    van_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: True)
-    assert van_pythonw == str(Path("/x/pythonw.exe")), van_pythonw
-    # Ha nincs, a kapott szöveg változatlanul jön vissza (nem megy át Path-on).
-    nincs_pythonw = client.python_executable("/x/python.exe", windows=True, letezik=lambda p: False)
-    assert nincs_pythonw == "/x/python.exe", nincs_pythonw
-    nem_windows = client.python_executable("/x/python3", windows=False)
-    assert nem_windows == "/x/python3", nem_windows
+    # 3) A démon lássa a program fájljait és a .venv csomagjait (libtorrent):
+    # az alaptelepítés Pythonja magától nem tud a virtuális környezetről.
+    env = client.daemon_kornyezet({"PYTHONPATH": "/regi"}, ["/v/Lib/site-packages"], "/projekt")
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        "/projekt",
+        "/v/Lib/site-packages",
+        "/regi",
+    ], env["PYTHONPATH"]
+    ures = client.daemon_kornyezet({}, ["/v/Lib/site-packages"], "/projekt")
+    assert ures["PYTHONPATH"].split(os.pathsep) == ["/projekt", "/v/Lib/site-packages"], ures
 
 
 def test_session_statisztika():
