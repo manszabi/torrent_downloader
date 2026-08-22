@@ -4,4 +4,4 @@
 4: alapértelmezett letöltés könyvtár windowsnál a Downloads aktuális helye legyen, linux-nál a home könyvtárt
 5: ha megszakítom a torrentet legyen agy ablak ami megkérdezi hogy a letöltött fájljait törölje-e, figyelj ha könyvtárba töltődött azt is törölni kell,
 6: port nyitás a routeren be/ki kapcsolás a settingsben (ha a routeren nincs engedélyezve ne legyen gond
-7: ha befejeződött a letöltés vagy a letöltés utáni megosztás akkor a háttér daemon is leáll/bezáródik?, ne fusson a háttérben ha nincs torrent letöltés/megosztás
+7: ha befejeződött a letöltés vagy a letöltés utáni megosztás akkor a háttér daemon is leáll/bezáródik?, ne fusson a háttérben ha nincs torrent letöltés/megosztás, most azt látom hogy marad pythonw.exe a háttérben több is
