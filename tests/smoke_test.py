@@ -669,6 +669,15 @@ def main() -> int:
         try:
             from torrentdl import client
 
+            # A napló ürítése futó démonnál: Windowson a megnyitott fájlt csak
+            # ő tudja lecserélni, és utána is tudnia kell naplózni.
+            naplo = home / "daemon.log"
+            regi_meret = naplo.stat().st_size
+            assert regi_meret > 0, "üres a napló, nincs mit üríteni"
+            client.naplo_urites()
+            assert naplo.stat().st_size < regi_meret, "a napló nem ürült ki"
+            assert "kiürítette" in naplo.read_text(encoding="utf-8", errors="replace")
+
             valasz = client.call("discard", delete_files=True)
         finally:
             if regi_home is None:
