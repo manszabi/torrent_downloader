@@ -9,6 +9,7 @@ import logging
 import logging.handlers
 import os
 import selectors
+import shutil
 import signal
 import socket
 import time
@@ -148,6 +149,78 @@ def state_name(status) -> str:
         }[status.state]
     except (KeyError, AttributeError):
         return str(status.state)
+
+
+def torrent_celpont(save_path: str | Path, nev: str) -> Path | None:
+    """A torrent saját bejegyzése a célmappában: `save_path/<név>`.
+
+    Egy fájlos torrentnél ez maga a fájl, több fájlosnál a torrent könyvtára.
+    None, ha a név nem használható: üresre, útvonal-elválasztót vagy ".."-t
+    tartalmazó névre nem törlünk (magnet linkből a név a felhasználótól jön,
+    így nem mutathat a célmappán kívülre).
+    """
+    nev = (nev or "").strip()
+    if not nev or nev in (".", "..") or any(jel in nev for jel in ("/", "\\", os.sep)):
+        return None
+    gyoker = Path(save_path)
+    celpont = gyoker / nev
+    try:
+        if celpont.resolve().parent != gyoker.resolve():
+            return None  # jelkapcsolat vagy trükkös név: kilépne a célmappából
+    except OSError:
+        return None
+    return celpont
+
+
+def maradt_fajl(konyvtar: Path) -> bool:
+    """Maradt-e fájl a könyvtárban (bármilyen mélyen)."""
+    return any(fajlok for _gyoker, _mappak, fajlok in os.walk(konyvtar))
+
+
+def torrent_konyvtar_takaritas(save_path: str | Path, nev: str) -> None:
+    """A torrent üresen maradt könyvtárának eltakarítása.
+
+    A libtorrent a fájlokat törli, a könyvtárakat viszont otthagyja – pedig a
+    felhasználó a torrentet a mappájával együtt akarta törölni. Csak akkor
+    törlünk, ha tényleg nem maradt benne fájl (ha igen, azok nem a torrenthez
+    tartoznak, és nem a mi dolgunk eltakarítani őket).
+    """
+    celpont = torrent_celpont(save_path, nev)
+    if celpont is None or not celpont.is_dir() or celpont.is_symlink():
+        return
+    if maradt_fajl(celpont):
+        log.info("a torrent könyvtára nem üres, marad: %s", celpont)
+        return
+    try:
+        shutil.rmtree(celpont)
+    except OSError as exc:
+        log.warning("a torrent könyvtárát nem sikerült törölni: %s", exc)
+    else:
+        log.info("a torrent könyvtára törölve: %s", celpont)
+
+
+def torrent_fajlok_torlese(save_path: str | Path, nev: str) -> str | None:
+    """Egy már lezárt (session-ből kivett) torrent fájljainak törlése.
+
+    A befejezett letöltést a libtorrent már nem ismeri, ezért magunk töröljük a
+    torrent bejegyzését a célmappából. Hiba esetén a figyelmeztetés szövegét
+    adjuk vissza, különben None-t.
+    """
+    celpont = torrent_celpont(save_path, nev)
+    if celpont is None:
+        return f"a letöltés neve alapján nem található törölhető fájl: {nev}"
+    if not celpont.exists():
+        return None  # már nincs meg: nincs mit tenni
+    try:
+        if celpont.is_dir() and not celpont.is_symlink():
+            shutil.rmtree(celpont)
+        else:
+            celpont.unlink()
+    except OSError as exc:
+        log.warning("a fájlok törlése nem sikerült: %s", exc)
+        return f"a fájlok törlése nem sikerült: {exc}"
+    log.info("törölve: %s", celpont)
+    return None
 
 
 class Daemon:
@@ -737,11 +810,32 @@ class Daemon:
             if now - self._last_stats_keres >= STATISZTIKA_MP:
                 self._last_stats_keres = now
                 self.ses.post_session_stats()
-        else:
+        # Tétlenül nem tartjuk életben a folyamatot: ami dolga volt, azt a
+        # lemezre mentette, és a felület újranyitásakor visszaáll.
+        if self._tetlen():
             timeout = int(self.cfg["idle_timeout"])
             if timeout and now - self._idle_since >= timeout:
-                log.info("nincs letöltés %s másodperce, a démon kilép", timeout)
+                log.info("nincs tennivaló %s másodperce, a démon kilép", timeout)
                 self.running = False
+        else:
+            self._idle_since = now
+
+    def _tetlen(self) -> bool:
+        """Van-e most tennivalója a démonnak.
+
+        Nem csak az alapállapot tétlen: a határozatlan időre szüneteltetett és
+        a hibaállapotban álló munka mellett sem tölt és nem oszt meg semmit –
+        ilyenkor is lejárhat a tétlenségi idő. Az *időzített* szünet viszont
+        nem: annak a végén nekünk kell folytatnunk a letöltést.
+        """
+        if self.job is None:
+            return True
+        if self.recheck:
+            return False
+        allapot = self.job.get("state")
+        if allapot == STATE_ERROR:
+            return True
+        return allapot == STATE_PAUSED and not self.job.get("paused_until")
 
     def _save_resume(self, blocking: bool = False, only_if_modified: bool = False) -> None:
         if self.handle is None or not self.handle.is_valid():
@@ -842,6 +936,8 @@ class Daemon:
                 "pause": self.cmd_pause,
                 "resume": self.cmd_resume,
                 "cancel": self.cmd_cancel,
+                "discard": self.cmd_discard,
+                "clear_log": self.cmd_naplo_urites,
                 "check": self.cmd_check,
                 "shutdown": self.cmd_shutdown,
             }
@@ -965,19 +1061,34 @@ class Daemon:
             raise ValueError("nincs aktív letöltés")
         delete_files = bool(request.get("delete_files"))
         name = self.job.get("name") or self.job["source"]
+        save_path = self.job["save_path"]
+        info_hash = self.job.get("info_hash")
         handle, self.handle = self.handle, None
         self.job = None
         self.recheck = None
         warning = None
         if handle is not None and handle.is_valid():
             # metaadat nélkül (pl. friss magnet) még nincs mit törölni a lemezről
-            had_files = handle.status().has_metadata
+            status = handle.status()
+            had_files = status.has_metadata
+            # A lemezen a torrent saját nevén szerepel (ez nem feltétlenül
+            # ugyanaz, mint a munkába mentett név, pl. magnet "dn" mezője).
+            nev_lemezen = status.name or name
             self.ses.remove_torrent(handle, lt.session.delete_files if delete_files else 0)
             if delete_files and had_files:
                 warning = self._await_delete()
+                if warning is None:
+                    # A libtorrent a fájlokat törli, az üresen maradt könyvtárat
+                    # viszont otthagyja – azt magunk takarítjuk el.
+                    torrent_konyvtar_takaritas(save_path, nev_lemezen)
         for stale in (self.resume_path, self.job_path, self.torrent_copy):
             with contextlib.suppress(OSError):
                 stale.unlink()
+        # Ha ugyanezt a torrentet zártuk le, a "legutóbb befejezett" bejegyzés
+        # is elévült: ne kínáljuk fel törlésre a most megszűnt letöltést.
+        if self._last_info and self._last_info.get("info_hash") == info_hash:
+            self._last_info = None
+            self._last_takaritas()
         self._idle_since = time.time()
         log.info("megszakítva: %s (fájlok törlése: %s)", name, delete_files)
         return {"cancelled": name, "files_deleted": delete_files, "warning": warning}
@@ -996,6 +1107,46 @@ class Daemon:
             time.sleep(0.05)
         log.warning("a fájlok törlésének visszaigazolása időtúllépés")
         return "a fájlok törlésének visszaigazolása időtúllépéssel zárult"
+
+    def cmd_discard(self, request: dict):
+        """A befejezett letöltés elengedése – kérésre a fájljaival együtt.
+
+        A kész torrent már nincs a session-ben (a program alapállapotba állt),
+        ezért a libtorrent nem tudja törölni a fájljait: magunk tesszük meg.
+        """
+        if self.job is not None:
+            raise ValueError("van aktív letöltés – azt a megszakítás zárja le")
+        info = self._last_info
+        if not info:
+            raise ValueError("nincs befejezett letöltés")
+        delete_files = bool(request.get("delete_files"))
+        warning = None
+        if delete_files:
+            warning = torrent_fajlok_torlese(info["save_path"], info.get("name") or "")
+        self._last_info = None
+        self._last_takaritas()
+        self._idle_since = time.time()
+        log.info("a kész letöltés elengedve: %s (fájlok törlése: %s)",
+                 info.get("name"), delete_files)
+        return {"cancelled": info.get("name"), "files_deleted": delete_files, "warning": warning}
+
+    def cmd_naplo_urites(self, request: dict):
+        """A naplófájl kiürítése úgy, hogy a futó démon utána is tudjon írni.
+
+        A kezelőt előbb lezárjuk: Windowson a megnyitott fájlt nem lehet
+        törölni. A forgatott másolatok (daemon.log.1, .2) is mennek.
+        """
+        naplo = self.home / cfgmod.LOG_NAME
+        for handler in list(log.handlers):
+            with contextlib.suppress(Exception):
+                handler.close()
+        log.handlers.clear()
+        for ut in (naplo, *sorted(self.home.glob(cfgmod.LOG_NAME + ".*"))):
+            with contextlib.suppress(OSError):
+                ut.unlink()
+        setup_logging(naplo, to_stderr=self.foreground)
+        log.info("a naplót a felhasználó kiürítette")
+        return {"cleared": True}
 
     def cmd_check(self, request: dict):
         """Fájlok ellenőrzése kérésre; a hiányzó/sérült részt újratölti."""

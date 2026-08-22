@@ -318,6 +318,58 @@ def test_szunet_ellenorzes_kozben():
         shutil.rmtree(munka, ignore_errors=True)
 
 
+def test_torles_takaritas():
+    """A törlés a torrent könyvtárát is elviszi, de csak ha tényleg üres."""
+    from torrentdl import engine
+
+    munka = Path(tempfile.mkdtemp(prefix="torrentdl-torles-"))
+    try:
+        cel = munka / "cel"
+        (cel / "csomag" / "mely").mkdir(parents=True)
+        (cel / "csomag" / "adat.bin").write_bytes(b"x")
+
+        # A célmappán kívülre mutató nevet nem fogadunk el (magnet "dn" mezője
+        # a felhasználótól jön, az útvonal-trükköt itt kell megállítani).
+        assert engine.torrent_celpont(cel, "../kifele") is None
+        assert engine.torrent_celpont(cel, "") is None
+        assert engine.torrent_celpont(cel, "csomag") == cel / "csomag"
+
+        # Amíg maradt fájl a könyvtárban, nem nyúlunk hozzá.
+        engine.torrent_konyvtar_takaritas(cel, "csomag")
+        assert (cel / "csomag").is_dir(), "a nem üres könyvtárat nem szabad törölni"
+
+        # A libtorrent a fájlokat törli; az üres könyvtárat mi takarítjuk el.
+        (cel / "csomag" / "adat.bin").unlink()
+        engine.torrent_konyvtar_takaritas(cel, "csomag")
+        assert not (cel / "csomag").exists(), "az üres könyvtár nem törlődött"
+
+        # A kész (session-ből kivett) letöltés fájljait magunk töröljük.
+        (cel / "film").mkdir()
+        (cel / "film" / "film.mkv").write_bytes(b"x")
+        assert engine.torrent_fajlok_torlese(cel, "film") is None
+        assert not (cel / "film").exists(), "a kész letöltés könyvtára megmaradt"
+        (cel / "egy.bin").write_bytes(b"x")
+        assert engine.torrent_fajlok_torlese(cel, "egy.bin") is None
+        assert not (cel / "egy.bin").exists()
+        # Ami már nincs meg, arra nem panaszkodunk; a rossz névre igen.
+        assert engine.torrent_fajlok_torlese(cel, "nincs.bin") is None
+        assert engine.torrent_fajlok_torlese(cel, "../kifele") is not None
+    finally:
+        shutil.rmtree(munka, ignore_errors=True)
+
+
+def test_letoltes_mappa():
+    """Alapértelmezett célmappa: Windowson a Letöltések, máshol a home."""
+    assert cfgmod.letoltes_mappa(windows=False) == Path.home()
+    van = cfgmod.letoltes_mappa(windows=True, kereso=lambda: str(Path.home()))
+    assert van == Path.home(), van
+    # Ha a Windows nem adja meg (vagy rossz utat ad), a tartalék a home.
+    assert cfgmod.letoltes_mappa(windows=True, kereso=lambda: None) in (
+        Path.home(),
+        Path.home() / "Downloads",
+    )
+
+
 def test_folyamat_inditas():
     """A háttérdémon indítási módja Windowson (konzolablak nélkül)."""
     from torrentdl import client
@@ -438,6 +490,8 @@ def main() -> int:
     check("hibafelismerés (tele lemez vagy más hiba)", test_hibafelismeres)
     check("session statisztika (DHT-számláló)", test_session_statisztika)
     check("folyamatindítás konzolablak nélkül", test_folyamat_inditas)
+    check("törléskor a torrent könyvtára is megy", test_torles_takaritas)
+    check("alapértelmezett célmappa", test_letoltes_mappa)
     check("szüneteltetés ellenőrzés közben", test_szunet_ellenorzes_kozben)
     check("forrás méretkorlátja", test_forras_meret_hatar)
     check("egypéldány-zár észlelése", test_zar_eszlelese)
@@ -547,10 +601,52 @@ def main() -> int:
         )
         leftovers = [p for p in dest.rglob("*") if p.is_file()]
         assert not leftovers, f"maradtak fájlok: {leftovers}"
+        # A libtorrent a fájlokat törli, a könyvtárat nem – azt mi takarítjuk.
+        assert not (dest / "nagy").exists(), "a torrent könyvtára megmaradt"
         proc = run(home, "cancel", check=False)
         assert proc.returncode != 0 or "Nincs aktív" in proc.stdout, proc.stdout
 
     check("megszakítás a fájlok törlésével", test_cancel)
+
+    # ------------------------------- 4b. kész letöltés törlése a fájljaival
+    def test_discard():
+        """Ez a felület "Törlés a fájlokkal" gombja kész letöltésnél.
+
+        A kész torrent már nincs a session-ben, ezért a fájljait a démon
+        magától törli – a torrent könyvtárával együtt.
+        """
+        src = work / "kesz2" / "film"
+        make_payload(src, 200_000)
+        torrent = make_torrent(src, work / "kesz2.torrent")
+        dest = work / "cel-kesz2"
+        dest.mkdir()
+        shutil.copytree(src, dest / src.name)  # már kész: csak ellenőrzés kell
+        run(home, "add", str(torrent), "-d", str(dest))
+        wait_for(
+            lambda: status(home)["job"] is None and status(home)["last"] is not None,
+            timeout=60,
+            what="a második letöltés befejeződése",
+            home=home,
+        )
+        regi_home = os.environ.get("TORRENTDL_HOME")
+        os.environ["TORRENTDL_HOME"] = str(home)
+        try:
+            from torrentdl import client
+
+            valasz = client.call("discard", delete_files=True)
+        finally:
+            if regi_home is None:
+                os.environ.pop("TORRENTDL_HOME", None)
+            else:
+                os.environ["TORRENTDL_HOME"] = regi_home
+        assert valasz["files_deleted"] is True, valasz
+        assert not valasz.get("warning"), valasz
+        assert not (dest / "film").exists(), "a kész letöltés könyvtára megmaradt"
+        assert not (home / "last.json").exists(), "a kész letöltés adata megmaradt"
+        text = run(home, "status").stdout
+        assert "Utoljára befejezve" not in text, text
+
+    check("kész letöltés törlése a fájljaival", test_discard)
 
     # -------------------------------------------------- 5. megosztás a letöltés után
     def test_seeding():
