@@ -1,3 +1,4 @@
 1: Ha nem zártam be a guit, és vége a letöltésnek/vagy megosztásnak nem tudom törölni a torrentet nem aktív a gomb
 2: Ha törlöm a torrent fájljait akkor ha könyvtárba töltődött le (a torrentben sokszor a torrent neve a könyvtár vagy a film címe stb.) nem törlődik a könyvtára
 3: log file törlésére gomb ill. a beállításfájlokhoz uggrás gomb, új explorer ablak nyílik meg
+4: alapértelmezett letöltés könyvtár windowsnál a Downloads aktuális helye legyen, linux-nál a home könyvtárt
