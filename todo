@@ -3,3 +3,4 @@
 3: log file törlésére gomb ill. a beállításfájlokhoz uggrás gomb, új explorer ablak nyílik meg
 4: alapértelmezett letöltés könyvtár windowsnál a Downloads aktuális helye legyen, linux-nál a home könyvtárt
 5: ha megszakítom a torrentet legyen agy ablak ami megkérdezi hogy a letöltött fájljait törölje-e, figyelj ha könyvtárba töltődött azt is törölni kell,
+6: port nyitás a routeren be/ki kapcsolás a settingsben (ha a routeren nincs engedélyezve ne legyen gond
