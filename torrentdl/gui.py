@@ -43,6 +43,11 @@ KONZOL_ELENGEDES_MP = 500  # ennyivel az ablak megnyitása után válunk le a ko
 # magunktól is folytatunk (a szüneteltetett vagy hibára futott munkát nem).
 FOLYTATHATO_ALLAPOTOK = ("downloading", "verifying", "seeding")
 
+# Ennyiszer próbáljuk magunktól elindítani a háttérdémont egy ablak-élet alatt.
+# Ha a démon indul, majd rögtön elszáll (és így körbe indítanánk újra), ez a
+# határ állítja meg: a Folytatás gombbal a felhasználó továbbra is próbálkozhat.
+DEMON_INDITAS_MAX = 3
+
 # A háttérdémon jelzőpontja az ablak bal felső sarkában.
 PONT = "\u25cf"
 PONT_ZOLD = "#2e9e4f"
@@ -200,9 +205,10 @@ class App(tk.Tk):
         self.utolso_naplo: str | None = ""
         self.utolso_allapot = None
         self.utolso_status: dict = {}
-        # A megszakadt munkához egyszer magunktól elindítjuk a háttérdémont.
+        # A megszakadt munkához magunktól elindítjuk a háttérdémont.
         self.demon_inditas_fut = False
         self.demon_inditas_volt = False
+        self.demon_inditasok = 0
 
         self._epit()
         threading.Thread(target=self._munkas, daemon=True).start()
@@ -371,15 +377,23 @@ class App(tk.Tk):
     # ------------------------------------------------------------ kirajzolás
 
     def _demon_ebresztes(self, status: dict) -> None:
-        """Megszakadt munka esetén elindítja a háttérdémont (egyszer)."""
+        """Megszakadt munka esetén elindítja a háttérdémont.
+
+        Egy megszakadt munkára egy indítás jut; ha a démon fut, a jelzőt
+        visszaállítjuk (egy későbbi összeomlás után újra próbálhatjuk). Az
+        elszálló-újrainduló démon körbeindítását a DEMON_INDITAS_MAX zárja ki.
+        """
         if status.get("daemon"):
-            # Fut: ha később mégis elszállna, újra megpróbálhatjuk.
             self.demon_inditas_volt = False
             return
-        if not demon_inditas_kell(status, self.demon_inditas_fut, self.demon_inditas_volt):
+        eleget_probaltuk = (
+            self.demon_inditas_volt or self.demon_inditasok >= DEMON_INDITAS_MAX
+        )
+        if not demon_inditas_kell(status, self.demon_inditas_fut, eleget_probaltuk):
             return
         self.demon_inditas_fut = True
         self.demon_inditas_volt = True
+        self.demon_inditasok += 1
         self._kuld(client.ensure_daemon, "demon")
 
     def _allapot_kirajzol(self, status: dict) -> None:

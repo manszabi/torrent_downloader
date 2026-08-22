@@ -592,6 +592,37 @@ def main() -> int:
 
     check("szüneteltetés időzítéssel és folytatás", test_pause_resume)
 
+    # ------------------------------ 2b. tétlen démon kilép (szüneteltetve is)
+    def test_tetlen_kilepes():
+        """Szüneteltetve nincs mit tennie: a tétlenségi idő után kilép.
+
+        Az időzített szünet a kivétel – azt meg kell várnia, hogy a végén
+        folytathassa; ezt a fenti teszt őrzi.
+        """
+        run(home, "config", "--set", "idle_timeout=5")
+        run(home, "daemon", "stop")  # az új beállítás induláskor lép életbe
+        run(home, "daemon", "start")
+        run(home, "pause")  # határozatlan időre
+        # A wait_for időtúllépéskor magától elszáll, a naplóval együtt.
+        wait_for(
+            lambda: run(home, "daemon", "status", check=False).returncode != 0,
+            timeout=45,
+            interval=1,
+            what="a tétlen (szüneteltetett) démon kilépése",
+            home=home,
+        )
+        # A munka nem veszett el: a folytatás újraindítja a démont.
+        run(home, "config", "--set", "idle_timeout=30")
+        run(home, "resume")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") in ("downloading", "verifying"),
+            timeout=30,
+            what="a folytatás a tétlen kilépés után",
+            home=home,
+        )
+
+    check("tétlen démon kilépése szüneteltetve is", test_tetlen_kilepes)
+
     # -------------------------------------------------- 3. összeomlás utáni folytatás
     def test_crash_resume():
         pid = lock_modul.read_pid(home / "daemon.lock")
