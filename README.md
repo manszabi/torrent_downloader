@@ -82,21 +82,50 @@ parancssori rész tkinter nélkül is működik.
 
 ## A grafikus felület
 
+- A bal felső sarokban a **Daemon aktív?** jelzés: zöld pont, ha fut a
+  háttérdémon (ő végzi a munkát), sárga, amíg indul, piros, ha áll.
 - **Torrent / magnet** mező: beilleszthető magnet link, vagy `.torrent` fájl
   tallózható; **Célmappa**: ide kerülnek a fájlok (a program megjegyzi).
+  Alapértelmezés: Windowson a **Letöltések** mappa tényleges helye, máshol a
+  home könyvtár.
 - **Letöltés indítása** – amíg fut egy letöltés, a gomb inaktív (egyszerre egy
   torrent tölthető).
 - **Szünet**, **Szünet időre…** (pl. `45s`, `30m`, `2h`, `1h30m` – egység nélkül
-  perc), **Folytatás**, **Megszakítás**, **Törlés a fájlokkal** (rákérdez).
+  perc), **Folytatás**, **Megszakítás**, **Törlés a fájlokkal**.
+- A **Megszakítás** és a **Törlés a fájlokkal** ugyanazt az ablakot nyitja meg:
+  ott egy jelölőnégyzettel dől el, töröljük-e a letöltött fájlokat. A törlés a
+  torrent saját mappáját is elviszi (több fájlos torrentnél oda kerülnek a
+  fájlok), de csak akkor, ha nem maradt benne más.
+- A **kész** (már nem aktív) letöltés fájljai is törölhetők ugyanezzel a
+  gombbal, amíg a felület mutatja őket. Ilyenkor a program a befejezéskor
+  mentett fájllista alapján törli a torrent saját fájljait – ami mást talál a
+  mappában (a te fájljaid), az marad, és akkor a mappa is.
 - Alul a **napló** a háttérdémon üzeneteit mutatja, a státuszsor pedig a démon
-  állapotát, a portot, a DHT/PEX és a titkosítás beállítását.
+  állapotát, a portot, a DHT/PEX és a titkosítás beállítását. A **Napló
+  ürítése** gomb kitörli a naplófájlt, az **Adatmappa…** gomb pedig megnyitja a
+  beállítás- és naplófájlok mappáját a fájlkezelőben.
 - A **Beállítások…** ablakban állítható a port, a sebességkorlátok, a
-  kapcsolatszám, a titkosítás módja és a DHT/PEX/LSD/µTP; mentés után a démon
-  újraindul, a letöltés pedig ott folytatódik, ahol tartott.
+  kapcsolatszám, a titkosítás módja, a DHT/PEX/LSD/µTP és a **router
+  portnyitása (UPnP/NAT-PMP)**; mentés után a démon újraindul, a letöltés pedig
+  ott folytatódik, ahol tartott.
 - Az ablak bezárása **nem** szakítja meg a letöltést: a háttérdémon tovább
   dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés. Ha nincs
   aktív letöltés, a bezárással a háttérdémon is kilép (nem várja meg a
   tétlenségi idő leteltét).
+- A háttérdémon nem lézeng feleslegesen: ha nincs mit tennie – nincs letöltés,
+  nincs megosztás, vagy a munka határozatlan időre szünetel, illetve hibára
+  futott –, a tétlenségi idő leteltével (alapból 10 perc, `idle_timeout`)
+  magától kilép. Az *időzített* szünet kivétel: azt meg kell várnia, hogy a
+  végén folytathassa.
+- Ha a program összeomlott vagy a gép leállt egy letöltés közben, az ablak
+  következő megnyitásakor a felület **magától elindítja a háttérdémont**: az a
+  mentett állapotból visszaállítja a torrentet, ellenőrzi a lemezen lévő
+  fájlokat, és onnan folytatja, ahol abbamaradt. Amit te szüneteltettél vagy
+  ami hibára futott, azt nem indítja el magától – arra ott a **Folytatás**
+  gomb, ami álló háttérdémon mellett is használható.
+- A befejezett letöltésről szóló felirat csak a program futása alatt látszik.
+  Ha a fájlok elkészültek és nincs bekapcsolva a letöltés utáni megosztás,
+  a következő indításkor a felület alapállapotból indul.
 
 ## Használat parancssorból
 
@@ -153,7 +182,7 @@ torrentdl daemon stop                             # a változások újraindítá
 | `enable_pex` | true | Peer Exchange |
 | `enable_lsd` | true | helyi hálózati peer-keresés |
 | `enable_utp` | true | µTP transzport |
-| `enable_upnp` / `enable_natpmp` | true | portnyitás a routeren |
+| `enable_upnp` / `enable_natpmp` | true | portnyitás a routeren (a Beállítások ablakból is kapcsolható; ha a router nem engedi, a letöltés attól még megy) |
 | `encryption` | enabled | `disabled` / `enabled` (ha a peer is tudja) / `forced` (csak titkosítva) |
 | `max_download_rate` | 0 | letöltési korlát kB/s-ban (0 = korlátlan) |
 | `max_upload_rate` | 0 | feltöltési korlát kB/s-ban |
@@ -161,7 +190,7 @@ torrentdl daemon stop                             # a változások újraindítá
 | `seed_after_complete` | false | ha `true`, a kész letöltést megosztja tovább (lásd lent) |
 | `resume_save_interval` | 30 | ennyi másodpercenként menti a folytatási adatot |
 | `verify_after_crash` | true | nem tiszta leállás után teljes fájlellenőrzés |
-| `idle_timeout` | 600 | ennyi tétlen másodperc után a démon kilép (0 = soha) |
+| `idle_timeout` | 600 | ennyi tétlen másodperc után a démon kilép (0 = soha); tétlen: nincs letöltés/megosztás, vagy a munka határozatlan ideig szünetel / hibára futott |
 
 ## Megosztás a letöltés után
 
@@ -222,6 +251,8 @@ végigellenőrizze a fájlokat (ez több perc is lehet), kikapcsolható:
   - `resume.dat` – a libtorrent folytatási adata (melyik darab van meg)
   - `current.torrent` – a torrent metaadatának másolata, hogy magnet link is folytatható legyen
   - `session.state` – DHT-node gyorsítótár, `last.json` – az utolsó befejezett letöltés
+    (csak amíg a démon fut: leálláskor törlődik, hogy egy újranyitás ne a régi,
+    kész torrenttel fogadjon)
   - `daemon.log` – napló, `daemon.lock` – egypéldány-zár, `daemon.endpoint` – port és jelszó
 - Amikor a letöltés eléri a 100%-ot, a program `force_recheck`-kel újraellenőrzi az összes
   darabot. Ha minden ép: a torrentet eltávolítja a session-ből, törli a munkaállományokat,

@@ -32,7 +32,10 @@ from torrentdl.format import human_bytes, human_time, kimenet_utf8  # noqa: E402
 kimenet_utf8()
 from torrentdl.gui import (  # noqa: E402
     KONZOL_JELZO,
+    PONT_PIROS,
+    PONT_ZOLD,
     App,
+    demon_inditas_kell,
     gomb_allapotok,
     konzol_elengedes,
     tcl_kornyezet,
@@ -114,6 +117,57 @@ def main() -> int:
         False,
     )
 
+    # A kész (már nem aktív) letöltés fájljai is törölhetők maradnak.
+    kesz = {"daemon": True, "job": None, "last": {"name": "film", "save_path": "/x"}}
+    check("kész letöltésnél a törlés lehetséges", gomb_allapotok(kesz)["torol"], True)
+    check("kész letöltésnél nincs mit megszakítani", gomb_allapotok(kesz)["megszakit"], False)
+    check("kész letöltés mellett új indítható", gomb_allapotok(kesz)["indit"], True)
+    check(
+        "üres állapotban nincs mit törölni",
+        gomb_allapotok({"daemon": True, "job": None, "last": None})["torol"],
+        False,
+    )
+
+    # --- Megszakadt letöltés: a felület magától elindítja a háttérdémont.
+    # (Összeomlás vagy gépleállás után a mentett állapot megvan, de a démon áll.)
+    megszakadt = {"daemon": False, "job": {"state": "downloading"}}
+    check("megszakadt letöltéshez elindítjuk a démont", demon_inditas_kell(megszakadt), True)
+    check(
+        "amíg indul, nem indítjuk újra",
+        demon_inditas_kell(megszakadt, inditas_fut=True),
+        False,
+    )
+    check(
+        "sikertelen indítás után nem próbálkozunk körbe-körbe",
+        demon_inditas_kell(megszakadt, mar_probaltuk=True),
+        False,
+    )
+    check(
+        "szüneteltetett munkát nem indítunk el magunktól",
+        demon_inditas_kell({"daemon": False, "job": {"state": "paused"}}),
+        False,
+    )
+    check(
+        "hibára futott munkát sem",
+        demon_inditas_kell({"daemon": False, "job": {"state": "error"}}),
+        False,
+    )
+    check(
+        "futó démonhoz nincs teendő",
+        demon_inditas_kell({"daemon": True, "job": {"state": "downloading"}}),
+        False,
+    )
+    check("munka nélkül nincs mit indítani", demon_inditas_kell({"daemon": False}), False)
+
+    # A gombok is igazodnak ahhoz, hogy fut-e a démon.
+    check("álló démonnál a Folytatás aktív", gomb_allapotok(megszakadt)["folytat"], True)
+    check("álló démonnál a Szünet inaktív", gomb_allapotok(megszakadt)["szunet"], False)
+    check(
+        "futó démonnál a Szünet aktív",
+        gomb_allapotok({"daemon": True, "job": {"state": "downloading"}})["szunet"],
+        True,
+    )
+
     # Windowson a .venv-ből induló Python nem találja magától a Tcl/Tk-t.
     with tempfile.TemporaryDirectory() as alap:
         os.makedirs(os.path.join(alap, "tcl", "tcl8.6"))
@@ -183,6 +237,8 @@ def main() -> int:
     shutil.copytree(MUNKA / "adatok" / "csomag", celmappa / "csomag")
 
     app = App()
+    # Induláskor még nem tudjuk, fut-e a démon: a jelzés piros.
+    check("a démonjelző induláskor piros", app.demon_pont.cget("foreground"), PONT_PIROS)
     porgeti(app, 0.5)
     check("ablak címe", app.title(), "Torrent letöltő")
     check("induláskor nincs munka", app.megszakit_gomb.instate(["disabled"]), True)
@@ -221,6 +277,12 @@ def main() -> int:
     porgeti(app, 1.2)
     check("kész letöltés után nincs aktív munka", app.megszakit_gomb.instate(["disabled"]), True)
     check("kész letöltés után indítható új", app.indit_gomb.instate(["!disabled"]), True)
+    check(
+        "kész letöltés fájljai törölhetők maradnak",
+        app.torol_gomb.instate(["!disabled"]),
+        True,
+    )
+    check("a démonjelző zöld, amíg fut a démon", app.demon_pont.cget("foreground"), PONT_ZOLD)
     check("a napló megjelent az ablakban", "démon elindult" in app.utolso_naplo, True)
     check("a felirat a kész letöltésről szól",
           "elkészült" in app.allapot_cimke.cget("text"), True)

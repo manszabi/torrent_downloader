@@ -233,6 +233,44 @@ def spawn_daemon(wait: float = DAEMON_START_TIMEOUT) -> bool:
     return False
 
 
+def naplo_urites() -> None:
+    """A naplófájl kiürítése.
+
+    Ha fut a démon, ő üríti: Windowson a megnyitott fájlt más nem törölheti, és
+    a naplózását is újra kell nyitnia. Ha nem fut, magunk töröljük – csak ezért
+    nem érdemes elindítani.
+    """
+    if ping():
+        request(cfgmod.read_endpoint(), "clear_log")
+        return
+    naplo = cfgmod.path(cfgmod.LOG_NAME)
+    for ut in (naplo, *sorted(naplo.parent.glob(naplo.name + ".*"))):
+        with contextlib.suppress(OSError):
+            ut.unlink()
+
+
+def mappa_megnyitas(
+    mappa: Path | None = None, indito: Callable[[Path], None] | None = None
+) -> None:
+    """Az adatmappa megnyitása a rendszer fájlkezelőjében (új ablakban)."""
+    cel = cfgmod.home() if mappa is None else Path(mappa)
+    if indito is not None:
+        indito(cel)
+        return
+    if sys.platform == "win32":  # pragma: no cover - Windowson fut
+        # A startfile az Explorert nyitja meg – konzolablak nélkül.
+        os.startfile(cel)  # noqa: S606 - saját, ismert útvonal, nem felhasználói parancs
+        return
+    parancs = ["open"] if sys.platform == "darwin" else ["xdg-open"]
+    subprocess.Popen(
+        [*parancs, str(cel)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 class DaemonUnavailable(DaemonError):
     """Nem sikerült elindítani a háttérdémont."""
 
@@ -278,7 +316,11 @@ def fetch_status() -> dict:
     return {
         "daemon": False,
         "job": cfgmod.read_json(cfgmod.path(cfgmod.JOB_NAME)),
-        "last": cfgmod.read_json(cfgmod.path(cfgmod.LAST_NAME)),
+        # A legutóbb befejezett letöltés csak a démon életéig érdekes, és csak ő
+        # tud vele kezdeni valamit (a fájljait is ő törli). Ha nem fut, nem
+        # mutatjuk: egy összeomlás után maradt fájl különben olyan bejegyzést
+        # kínálna a felületen, amit egy frissen induló démon már nem ismer.
+        "last": None,
         "config": cfgmod.load_config(),
     }
 
@@ -370,6 +412,8 @@ __all__ = [
     "fetch_status",
     "indito_jelzok",
     "load_source",
+    "mappa_megnyitas",
+    "naplo_urites",
     "ping",
     "spawn_daemon",
     "stop_daemon",

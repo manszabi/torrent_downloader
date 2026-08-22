@@ -39,6 +39,21 @@ FRISSITES_TETLEN_MP = 3000  # ha nincs aktív munka, ennyi is elég
 UZENET_MP = 100  # ilyen sűrűn nézzük meg, üzent-e a háttérszál
 KONZOL_ELENGEDES_MP = 500  # ennyivel az ablak megnyitása után válunk le a konzolról
 
+# Ezekben az állapotokban ment a munka, amikor a program megszakadt: ilyet
+# magunktól is folytatunk (a szüneteltetett vagy hibára futott munkát nem).
+FOLYTATHATO_ALLAPOTOK = ("downloading", "verifying", "seeding")
+
+# Ennyiszer próbáljuk magunktól elindítani a háttérdémont egy ablak-élet alatt.
+# Ha a démon indul, majd rögtön elszáll (és így körbe indítanánk újra), ez a
+# határ állítja meg: a Folytatás gombbal a felhasználó továbbra is próbálkozhat.
+DEMON_INDITAS_MAX = 3
+
+# A háttérdémon jelzőpontja az ablak bal felső sarkában.
+PONT = "\u25cf"
+PONT_ZOLD = "#2e9e4f"
+PONT_PIROS = "#c0392b"
+PONT_SARGA = "#d68910"   # épp indul
+
 # Ezt az indító parancsfájl (inditas.bat) állítja be: jelzi, hogy a konzolablak
 # a mi indítónké, tehát a felület megnyitása után nincs rá szükség.
 KONZOL_JELZO = "TORRENTDL_KONZOL"
@@ -134,19 +149,44 @@ def gomb_allapotok(status: dict) -> dict:
     job = status.get("job")
     state = (job or {}).get("state")
     van_munka = job is not None
+    fut = bool(status.get("daemon"))
+    # A befejezett letöltés már nem "munka", de a fájljai a lemezen vannak:
+    # a Törlés gombbal ezeket is el lehet takarítani.
+    van_kesz = not van_munka and status.get("last") is not None
     # A kész torrent megosztása nem akadálya új letöltésnek: az indításkor
     # a megosztás magától véget ér.
     return {
         "indit": not van_munka or state == "seeding",
-        "szunet": van_munka and state in ("downloading", "verifying", "seeding"),
-        "folytat": van_munka and state in ("paused", "error"),
-        "idozitett": van_munka and state in ("downloading", "verifying", "seeding"),
+        # Amíg a démon nem fut, nincs mit szüneteltetni: a munka úgyis áll.
+        "szunet": fut and van_munka and state in FOLYTATHATO_ALLAPOTOK,
+        # Ha a démon nem fut (összeomlás, gépleállás után), a megszakadt munka
+        # a Folytatás gombbal indítható újra. A felület magától is megpróbálja,
+        # de a gomb legyen kéznél, ha az nem sikerült.
+        "folytat": van_munka and (state in ("paused", "error") or not fut),
+        "idozitett": fut and van_munka and state in FOLYTATHATO_ALLAPOTOK,
         "megszakit": van_munka,
-        "torol": van_munka,
+        "torol": van_munka or van_kesz,
         # Ellenőrzés akkor van értelme, ha van fájl a lemezen és épp nem megy
         # már egy ellenőrzés.
         "ellenoriz": van_munka and state in ("downloading", "paused", "seeding", "error"),
     }
+
+
+def demon_inditas_kell(
+    status: dict, inditas_fut: bool = False, mar_probaltuk: bool = False
+) -> bool:
+    """Elinduljon-e magától a háttérdémon a mentett állapot alapján.
+
+    Összeomlás vagy gépleállás után a felület csak a lemezre mentett állapotot
+    látja: a démon nem fut, a letöltés áll. Ha a munka *ment*, amikor a program
+    megszakadt, magunktól elindítjuk a démont – az a mentett állapotból
+    visszaállítja a torrentet, ellenőrzi a lemezen lévő fájlokat, és onnan
+    folytatja, ahol abbamaradt. Amit a felhasználó szüneteltetett, vagy ami
+    hibára futott, azt nem indítjuk el a háta mögött.
+    """
+    if status.get("daemon") or inditas_fut or mar_probaltuk:
+        return False
+    return (status.get("job") or {}).get("state") in FOLYTATHATO_ALLAPOTOK
 
 
 
@@ -161,8 +201,14 @@ class App(tk.Tk):
         self.munkak: queue.Queue = queue.Queue()
         self.valaszok: queue.Queue = queue.Queue()
         self.lekerdezes_fut = False
-        self.utolso_naplo = ""
+        # None: "még nem tudjuk" – így az ürítés utáni üres napló is kirajzolódik.
+        self.utolso_naplo: str | None = ""
         self.utolso_allapot = None
+        self.utolso_status: dict = {}
+        # A megszakadt munkához magunktól elindítjuk a háttérdémont.
+        self.demon_inditas_fut = False
+        self.demon_inditas_volt = False
+        self.demon_inditasok = 0
 
         self._epit()
         threading.Thread(target=self._munkas, daemon=True).start()
@@ -174,10 +220,19 @@ class App(tk.Tk):
 
     def _epit(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
+
+        # Jól látható jelzés: fut-e a háttérdémon (ő végzi a munkát).
+        fejlec = ttk.Frame(self, padding=(10, 8, 10, 0))
+        fejlec.grid(row=0, column=0, sticky="ew")
+        self.demon_pont = ttk.Label(
+            fejlec, text=PONT, foreground=PONT_PIROS, font=("TkDefaultFont", 14)
+        )
+        self.demon_pont.grid(row=0, column=0, sticky="w")
+        ttk.Label(fejlec, text="Daemon aktív?").grid(row=0, column=1, sticky="w", padx=(4, 0))
 
         forras = ttk.LabelFrame(self, text="Új letöltés", padding=8)
-        forras.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        forras.grid(row=1, column=0, sticky="ew", padx=8, pady=(8, 4))
         forras.columnconfigure(1, weight=1)
 
         ttk.Label(forras, text="Torrent / magnet:").grid(row=0, column=0, sticky="w")
@@ -187,7 +242,9 @@ class App(tk.Tk):
         ttk.Button(forras, text="Tallózás…", command=self._torrent_tallozas).grid(row=0, column=2)
 
         ttk.Label(forras, text="Célmappa:").grid(row=1, column=0, sticky="w")
-        self.cel_valtozo = tk.StringVar(value=self.gui_beallitas.get("cel", str(Path.home())))
+        self.cel_valtozo = tk.StringVar(
+            value=self.gui_beallitas.get("cel") or str(cfgmod.letoltes_mappa())
+        )
         ttk.Entry(forras, textvariable=self.cel_valtozo).grid(
             row=1, column=1, sticky="ew", padx=6, pady=2
         )
@@ -199,7 +256,7 @@ class App(tk.Tk):
         self.indit_gomb.grid(row=2, column=1, columnspan=2, sticky="e", pady=(6, 0))
 
         allapot = ttk.LabelFrame(self, text="Aktuális letöltés", padding=8)
-        allapot.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
+        allapot.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
         allapot.columnconfigure(1, weight=1)
 
         self.nev_cimke = ttk.Label(allapot, text="—", font=("TkDefaultFont", 10, "bold"))
@@ -239,7 +296,7 @@ class App(tk.Tk):
         self.torol_gomb.grid(row=0, column=5, padx=6)
 
         naplo_keret = ttk.LabelFrame(self, text="Napló", padding=6)
-        naplo_keret.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
+        naplo_keret.grid(row=3, column=0, sticky="nsew", padx=8, pady=4)
         naplo_keret.columnconfigure(0, weight=1)
         naplo_keret.rowconfigure(0, weight=1)
         self.naplo = tk.Text(naplo_keret, height=10, wrap="none", state="disabled")
@@ -249,11 +306,17 @@ class App(tk.Tk):
         self.naplo.configure(yscrollcommand=gorgeto.set)
 
         also = ttk.Frame(self, padding=(8, 0, 8, 8))
-        also.grid(row=3, column=0, sticky="ew")
+        also.grid(row=4, column=0, sticky="ew")
         also.columnconfigure(0, weight=1)
         self.statusz_cimke = ttk.Label(also, text="Indulás…")
         self.statusz_cimke.grid(row=0, column=0, sticky="w")
-        ttk.Button(also, text="Beállítások…", command=self._beallitasok).grid(row=0, column=1)
+        ttk.Button(also, text="Napló ürítése", command=self._naplo_urites).grid(
+            row=0, column=1, padx=(6, 0)
+        )
+        ttk.Button(also, text="Adatmappa…", command=self._mappa_megnyitas).grid(
+            row=0, column=2, padx=6
+        )
+        ttk.Button(also, text="Beállítások…", command=self._beallitasok).grid(row=0, column=3)
 
     # --------------------------------------------------------- háttérszál
 
@@ -281,6 +344,21 @@ class App(tk.Tk):
                     self._allapot_kirajzol(ertek)
                 else:
                     self.statusz_cimke.config(text=f"Nem érhető el a háttérdémon: {ertek}")
+            elif cimke in ("cancel", "discard") and sikeres:
+                # A démon jelzi, ha a fájlok törlése nem sikerült maradéktalanul.
+                figyelem = ertek.get("warning") if isinstance(ertek, dict) else None
+                if figyelem:
+                    messagebox.showwarning(CIM, str(figyelem), parent=self)
+                self._allapot_frissites(azonnal=True)
+            elif cimke == "demon":
+                # A magunktól indított démon: hiba esetén sem ugrik fel ablak,
+                # elég a felirat – a Folytatás gombbal újra lehet próbálni.
+                self.demon_inditas_fut = False
+                if not sikeres:
+                    self.statusz_cimke.config(
+                        text=f"Nem sikerült elindítani a háttérdémont: {ertek}"
+                    )
+                self._allapot_frissites(azonnal=True)
             elif sikeres:
                 self._allapot_frissites(azonnal=True)
             else:
@@ -298,7 +376,29 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ kirajzolás
 
+    def _demon_ebresztes(self, status: dict) -> None:
+        """Megszakadt munka esetén elindítja a háttérdémont.
+
+        Egy megszakadt munkára egy indítás jut; ha a démon fut, a jelzőt
+        visszaállítjuk (egy későbbi összeomlás után újra próbálhatjuk). Az
+        elszálló-újrainduló démon körbeindítását a DEMON_INDITAS_MAX zárja ki.
+        """
+        if status.get("daemon"):
+            self.demon_inditas_volt = False
+            return
+        eleget_probaltuk = (
+            self.demon_inditas_volt or self.demon_inditasok >= DEMON_INDITAS_MAX
+        )
+        if not demon_inditas_kell(status, self.demon_inditas_fut, eleget_probaltuk):
+            return
+        self.demon_inditas_fut = True
+        self.demon_inditas_volt = True
+        self.demon_inditasok += 1
+        self._kuld(client.ensure_daemon, "demon")
+
     def _allapot_kirajzol(self, status: dict) -> None:
+        self._demon_ebresztes(status)
+        self.utolso_status = status
         job = status.get("job")
         self.utolso_allapot = (job or {}).get("state")
         if job:
@@ -356,9 +456,16 @@ class App(tk.Tk):
             gomb.state(["!disabled"] if aktiv else ["disabled"])
 
         cfg = status.get("config") or {}
+        if status.get("daemon"):
+            demon_szoveg, pont_szin = "Háttérdémon: fut", PONT_ZOLD
+        elif self.demon_inditas_fut:
+            demon_szoveg, pont_szin = "Háttérdémon: indul…", PONT_SARGA
+        else:
+            demon_szoveg, pont_szin = "Háttérdémon: áll", PONT_PIROS
+        self.demon_pont.config(foreground=pont_szin)
         self.statusz_cimke.config(
             text=(
-                ("Háttérdémon: fut" if status.get("daemon") else "Háttérdémon: áll")
+                demon_szoveg
                 + f"   •   port: {cfg.get('listen_port', '?')}"
                 + f"   •   DHT: {'be' if cfg.get('enable_dht') else 'ki'}"
                 + f", PEX: {'be' if cfg.get('enable_pex') else 'ki'}"
@@ -442,18 +549,45 @@ class App(tk.Tk):
         self._kuld(lambda: client.call("check"), "check")
 
     def _megszakitas(self, fajlokkal: bool) -> None:
-        megoszt = self.utolso_allapot == "seeding"
-        if fajlokkal:
-            kerdes = "Biztosan törlöd ezt a torrentet a fájljaival együtt?"
-        elif megoszt:
-            kerdes = ("Befejezed a megosztást?\n"
-                      "A letöltött fájlok a helyükön maradnak.")
+        """Megszakítás vagy a kész letöltés elengedése – a fájlokról kérdezünk."""
+        status = self.utolso_status or {}
+        job = status.get("job")
+        utolso = status.get("last")
+        if job:
+            megoszt = (job.get("state") == "seeding")
+            cim = "Megosztás vége" if megoszt else "Megszakítás"
+            nev = job.get("name") or job.get("source") or ""
+            kerdes = (
+                "Befejezed a megosztást?" if megoszt else "Megszakítod az aktuális letöltést?"
+            )
+            parancs = "cancel"
+        elif utolso:
+            cim = "Kész letöltés törlése"
+            nev = utolso.get("name") or ""
+            kerdes = "Törlöd ezt a kész letöltést a listáról?"
+            parancs = "discard"
         else:
-            kerdes = ("Biztosan megszakítod az aktuális letöltést?\n"
-                      "A részben letöltött fájlok a helyükön maradnak.")
-        if not messagebox.askyesno(CIM, kerdes, parent=self, default="no" if fajlokkal else "yes"):
             return
-        self._kuld(lambda: client.call("cancel", delete_files=fajlokkal), "cancel")
+        parbeszed = MegszakitasKerdes(self, cim, kerdes, nev, fajlokkal)
+        self.wait_window(parbeszed)
+        if not parbeszed.rendben:
+            return
+        torol = parbeszed.fajlokkal.get()
+        self._kuld(lambda: client.call(parancs, delete_files=torol), parancs)
+
+    def _naplo_urites(self) -> None:
+        if not messagebox.askyesno(CIM, "Kiürítsem a naplófájlt?", parent=self):
+            return
+        # A kirajzolás a szöveg változásán múlik: az üres naplót is látni akarjuk.
+        self.utolso_naplo = None
+        self._kuld(client.naplo_urites, "naplo")
+
+    def _mappa_megnyitas(self) -> None:
+        """A beállítás- és naplófájlok mappája a fájlkezelőben."""
+        try:
+            client.mappa_megnyitas()
+        except OSError as exc:
+            messagebox.showerror(CIM, f"Nem sikerült megnyitni a mappát: {exc}", parent=self)
 
     def _beallitasok(self) -> None:
         parbeszed = Beallitasok(self)
@@ -517,6 +651,62 @@ class IdoKerdes(tk.Toplevel):
         self.destroy()
 
 
+class MegszakitasKerdes(tk.Toplevel):
+    """Megszakítás/törlés megerősítése – töröljük-e a letöltött fájlokat is.
+
+    A fájlok sorsát szándékosan itt, egy helyen kérdezzük meg: a jelölőnégyzet
+    a torrent könyvtárára is vonatkozik (több fájlos torrentnél a fájlok a
+    torrent saját mappájába kerülnek).
+    """
+
+    def __init__(
+        self,
+        szulo: tk.Tk | tk.Toplevel,
+        cim: str,
+        kerdes: str,
+        nev: str = "",
+        fajlokkal: bool = False,
+    ):
+        super().__init__(szulo)
+        self.title(cim)
+        self.transient(szulo)
+        self.resizable(False, False)
+        self.rendben = False
+        self.fajlokkal = tk.BooleanVar(value=fajlokkal)
+
+        keret = ttk.Frame(self, padding=12)
+        keret.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(keret, text=kerdes).grid(row=0, column=0, columnspan=2, sticky="w")
+        if nev:
+            ttk.Label(keret, text=nev, font=("TkDefaultFont", 10, "bold")).grid(
+                row=1, column=0, columnspan=2, sticky="w", pady=(4, 0)
+            )
+        ttk.Checkbutton(
+            keret,
+            text="A letöltött fájlokat (és a torrent mappáját) is töröld",
+            variable=self.fajlokkal,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.figyelmeztet = ttk.Label(keret, text="", foreground=PONT_PIROS)
+        self.figyelmeztet.grid(row=3, column=0, columnspan=2, sticky="w")
+        self.fajlokkal.trace_add("write", self._figyelmeztetes)
+        self._figyelmeztetes()
+
+        gombok = ttk.Frame(keret)
+        gombok.grid(row=4, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(gombok, text="Mégse", command=self.destroy).grid(row=0, column=0, padx=(0, 6))
+        ttk.Button(gombok, text="Rendben", command=self._ok).grid(row=0, column=1)
+        self.grab_set()
+
+    def _figyelmeztetes(self, *_args) -> None:
+        self.figyelmeztet.config(
+            text="A törölt fájlok nem kerülnek a Lomtárba." if self.fajlokkal.get() else ""
+        )
+
+    def _ok(self) -> None:
+        self.rendben = True
+        self.destroy()
+
+
 class Beallitasok(tk.Toplevel):
     """A démon beállításai (a mentés után újraindul a háttérdémon)."""
 
@@ -532,6 +722,10 @@ class Beallitasok(tk.Toplevel):
         ("enable_pex", "PEX (peer-csere)"),
         ("enable_lsd", "Helyi hálózati peer-keresés"),
         ("enable_utp", "µTP transzport"),
+        # A portnyitás kérés a routernek: ha nem támogatja vagy tiltja, a
+        # letöltés attól még megy (csak kevesebb peer talál meg minket).
+        ("enable_upnp", "Port nyitása a routeren (UPnP)"),
+        ("enable_natpmp", "Port nyitása a routeren (NAT-PMP)"),
         ("seed_after_complete", "Megosztás folytatása a letöltés után"),
     ]
 

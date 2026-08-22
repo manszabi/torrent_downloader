@@ -60,6 +60,53 @@ def home() -> Path:
     return base
 
 
+def letoltes_mappa(windows: bool | None = None, kereso=None) -> Path:
+    """Az alapértelmezett célmappa: Windowson a Letöltések, máshol a home.
+
+    A Letöltések mappát a felhasználó át is helyezhette (akár másik meghajtóra),
+    ezért a Windowstól kérdezzük meg a tényleges helyét (`SHGetKnownFolderPath`,
+    FOLDERID_Downloads). Ha ez nem megy, a `~/Downloads` a tartalék, végül a
+    home könyvtár.
+    """
+    if windows is None:
+        windows = sys.platform == "win32"
+    if not windows:
+        return Path.home()
+    ut = (kereso or _windows_letoltesek)()
+    if ut:
+        jelolt = Path(ut)
+        if jelolt.is_dir():
+            return jelolt
+    alap = Path.home() / "Downloads"
+    return alap if alap.is_dir() else Path.home()
+
+
+def _windows_letoltesek() -> str | None:  # pragma: no cover - csak Windowson
+    """A Letöltések mappa tényleges helye a Windowstól (FOLDERID_Downloads)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes  # noqa: PLC0415 - csak Windowson, csak induláskor
+        from uuid import UUID  # noqa: PLC0415
+
+        # A KNOWNFOLDERID a memóriában 16 bájt, a UUID bytes_le pontosan ilyen
+        # sorrendben adja – így nem kell szerkezetet kézzel összeraknunk.
+        azonosito = (ctypes.c_ubyte * 16)(
+            *UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+        )
+        mutato = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(azonosito), 0, None, ctypes.byref(mutato)
+        ):
+            return None  # a Windows hibát adott
+        try:
+            return mutato.value
+        finally:
+            ctypes.windll.ole32.CoTaskMemFree(mutato)
+    except Exception:
+        return None
+
+
 def path(name: str) -> Path:
     return home() / name
 
