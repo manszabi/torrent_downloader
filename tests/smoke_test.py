@@ -343,10 +343,14 @@ def test_torles_takaritas():
         engine.torrent_konyvtar_takaritas(cel, "csomag")
         assert not (cel / "csomag").exists(), "az üres könyvtár nem törlődött"
 
-        # A kész (session-ből kivett) letöltés fájljait magunk töröljük.
+        # A kész (session-ből kivett) letöltés fájljait magunk töröljük – de
+        # könyvtárat csak a befejezéskor mentett fájllista alapján, hogy a
+        # felhasználó ottani saját fájljai ne essenek áldozatul.
         (cel / "film").mkdir()
         (cel / "film" / "film.mkv").write_bytes(b"x")
-        assert engine.torrent_fajlok_torlese(cel, "film") is None
+        assert engine.torrent_fajlok_torlese(cel, "film") is not None
+        assert (cel / "film").is_dir(), "fájllista nélkül nem törlünk könyvtárat"
+        assert engine.torrent_fajlok_torlese(cel, "film", ["film/film.mkv"]) is None
         assert not (cel / "film").exists(), "a kész letöltés könyvtára megmaradt"
         (cel / "egy.bin").write_bytes(b"x")
         assert engine.torrent_fajlok_torlese(cel, "egy.bin") is None
@@ -354,6 +358,38 @@ def test_torles_takaritas():
         # Ami már nincs meg, arra nem panaszkodunk; a rossz névre igen.
         assert engine.torrent_fajlok_torlese(cel, "nincs.bin") is None
         assert engine.torrent_fajlok_torlese(cel, "../kifele") is not None
+
+        # Fájllistával csak a torrent saját fájljait törli: ami más van a
+        # mappában, az marad (és akkor a mappa is).
+        (cel / "sorozat" / "extra").mkdir(parents=True)
+        (cel / "sorozat" / "1.mkv").write_bytes(b"x")
+        (cel / "sorozat" / "2.mkv").write_bytes(b"x")
+        (cel / "sorozat" / "sajat.txt").write_text("a felhasználó fájlja")
+        lista = ["sorozat/1.mkv", "sorozat/2.mkv"]
+        assert engine.torrent_fajlok_torlese(cel, "sorozat", lista) is None
+        assert not (cel / "sorozat" / "1.mkv").exists()
+        assert (cel / "sorozat" / "sajat.txt").exists(), "idegen fájlt nem törlünk"
+        assert (cel / "sorozat").is_dir(), "a mappa nem üres, maradnia kell"
+        (cel / "sorozat" / "sajat.txt").unlink()
+        engine.torrent_konyvtar_takaritas(cel, "sorozat")
+        assert not (cel / "sorozat").exists()
+
+        # A célmappán kívülre mutató fájllistára nem törlünk semmit.
+        (cel / "megvan.bin").write_bytes(b"x")
+        assert engine.torrent_fajlok_torlese(cel, "x", ["../kifele.bin"]) is not None
+        assert (cel / "megvan.bin").exists()
+
+        # Elérhetetlen célmappa: kivétel, hogy a bejegyzés megmaradjon.
+        try:
+            engine.torrent_fajlok_torlese(munka / "nincs-ilyen-mappa", "x", ["a.bin"])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("az elérhetetlen célmappát jelezni kell")
+
+        # A gyökérmappát a fájllistából olvassuk ki (ha egyértelmű).
+        assert engine.torrent_gyokermappa(["film/a.mkv", "film/b.mkv"], "más") == "film"
+        assert engine.torrent_gyokermappa(["egy.mkv"], "egy.mkv") == "egy.mkv"
     finally:
         shutil.rmtree(munka, ignore_errors=True)
 

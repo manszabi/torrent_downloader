@@ -97,7 +97,9 @@ parancssori rész tkinter nélkül is működik.
   torrent saját mappáját is elviszi (több fájlos torrentnél oda kerülnek a
   fájlok), de csak akkor, ha nem maradt benne más.
 - A **kész** (már nem aktív) letöltés fájljai is törölhetők ugyanezzel a
-  gombbal, amíg a felület mutatja őket.
+  gombbal, amíg a felület mutatja őket. Ilyenkor a program a befejezéskor
+  mentett fájllista alapján törli a torrent saját fájljait – ami mást talál a
+  mappában (a te fájljaid), az marad, és akkor a mappa is.
 - Alul a **napló** a háttérdémon üzeneteit mutatja, a státuszsor pedig a démon
   állapotát, a portot, a DHT/PEX és a titkosítás beállítását. A **Napló
   ürítése** gomb kitörli a naplófájlt, az **Adatmappa…** gomb pedig megnyitja a

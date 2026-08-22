@@ -199,27 +199,95 @@ def torrent_konyvtar_takaritas(save_path: str | Path, nev: str) -> None:
         log.info("a torrent könyvtára törölve: %s", celpont)
 
 
-def torrent_fajlok_torlese(save_path: str | Path, nev: str) -> str | None:
+def celmappan_belul(gyoker: Path, relativ: str) -> Path | None:
+    """A célmappán belüli útvonal, vagy None, ha kilógna belőle.
+
+    A fájllista a torrent metaadatából jön, a célmappa a felhasználótól – a
+    kettő találkozásánál ellenőrizzük, hogy tényleg a célmappán belül maradunk.
+    """
+    if not relativ:
+        return None
+    ut = gyoker / relativ
+    try:
+        feloldott, gyoker_f = ut.resolve(), gyoker.resolve()
+    except OSError:
+        return None
+    if feloldott == gyoker_f or gyoker_f not in feloldott.parents:
+        return None
+    return ut
+
+
+def torrent_gyokermappa(fajlok: list[str], nev: str) -> str:
+    """A torrent saját mappája a célmappában (több fájlos torrentnél)."""
+    elsok = {Path(f).parts[0] for f in fajlok if Path(f).parts}
+    tobb_szintu = any(len(Path(f).parts) > 1 for f in fajlok)
+    if tobb_szintu and len(elsok) == 1:
+        return elsok.pop()
+    return nev
+
+
+def torrent_fajllista(handle) -> list[str]:
+    """A torrent fájljainak útvonala a célmappához képest."""
+    try:
+        info = handle.torrent_file()
+        if info is None:
+            return []
+        fajlok = info.files()
+        return [fajlok.file_path(i) for i in range(fajlok.num_files())]
+    except Exception:  # pragma: no cover - metaadat nélkül nincs lista
+        log.warning("a torrent fájllistája nem olvasható ki", exc_info=True)
+        return []
+
+
+def _torles(ut: Path) -> str | None:
+    """Egy fájl (vagy mappa) törlése; hiba esetén a rövid üzenet."""
+    try:
+        if ut.is_symlink() or ut.is_file():
+            ut.unlink()
+        elif ut.is_dir():
+            shutil.rmtree(ut)
+    except OSError as exc:
+        log.warning("nem sikerült törölni: %s (%s)", ut, exc)
+        return f"{ut.name}: {exc}"
+    return None
+
+
+def torrent_fajlok_torlese(
+    save_path: str | Path, nev: str, fajlok: list[str] | None = None
+) -> str | None:
     """Egy már lezárt (session-ből kivett) torrent fájljainak törlése.
 
-    A befejezett letöltést a libtorrent már nem ismeri, ezért magunk töröljük a
-    torrent bejegyzését a célmappából. Hiba esetén a figyelmeztetés szövegét
-    adjuk vissza, különben None-t.
+    A befejezett letöltést a libtorrent már nem ismeri, ezért magunk törlünk –
+    de csak azt, ami a torrenthez tartozik: a befejezéskor mentett fájllistát.
+    Ami mást talál a torrent mappájában (a felhasználó saját fájljai), az marad;
+    maga a mappa csak akkor megy, ha üresen maradt.
+
+    Ha a célmappa nem érhető el (pl. leválasztott meghajtó), kivételt dobunk:
+    ilyenkor a hívó ne felejtse el a bejegyzést, hogy később újra lehessen
+    próbálni. Részleges hiba esetén a figyelmeztetés szövegét adjuk vissza.
     """
-    celpont = torrent_celpont(save_path, nev)
-    if celpont is None:
-        return f"a letöltés neve alapján nem található törölhető fájl: {nev}"
-    if not celpont.exists():
-        return None  # már nincs meg: nincs mit tenni
-    try:
-        if celpont.is_dir() and not celpont.is_symlink():
-            shutil.rmtree(celpont)
-        else:
-            celpont.unlink()
-    except OSError as exc:
-        log.warning("a fájlok törlése nem sikerült: %s", exc)
-        return f"a fájlok törlése nem sikerült: {exc}"
-    log.info("törölve: %s", celpont)
+    gyoker = Path(save_path)
+    if not gyoker.is_dir():
+        raise ValueError(f"a célmappa nem érhető el: {gyoker}")
+    fajlok = list(fajlok or [])
+    utak = []
+    for relativ in fajlok:
+        ut = celmappan_belul(gyoker, relativ)
+        if ut is None:
+            return f"a mentett fájllista nem használható, ezért nem törlök: {relativ}"
+        utak.append(ut)
+    if not utak:
+        # Fájllista nélkül csak az egy fájlos torrentnél tudunk biztosat
+        # mondani; könyvtárat vaktában nem törlünk.
+        celpont = torrent_celpont(gyoker, nev)
+        if celpont is None or celpont.is_dir():
+            return "a letöltés fájllistája hiányzik, ezért nem törlök semmit"
+        utak = [celpont]
+    hibak = [uzenet for uzenet in map(_torles, utak) if uzenet]
+    torrent_konyvtar_takaritas(gyoker, torrent_gyokermappa(fajlok, nev))
+    if hibak:
+        return "néhány fájlt nem sikerült törölni – " + "; ".join(hibak[:3])
+    log.info("a kész letöltés fájljai törölve: %s", nev)
     return None
 
 
@@ -761,6 +829,9 @@ class Daemon:
             "total_bytes": int(status.total_wanted),
             "finished_at": time.time(),
             "verified": True,
+            # A fájllista a törléshez kell: a kész torrent már nincs a
+            # session-ben, így a libtorrent nem tudná megmondani, mi a sajátja.
+            "files": torrent_fajllista(self.handle),
         }
         cfgmod.write_json(self.last_path, info)
         self._last_info = info
@@ -1122,7 +1193,11 @@ class Daemon:
         delete_files = bool(request.get("delete_files"))
         warning = None
         if delete_files:
-            warning = torrent_fajlok_torlese(info["save_path"], info.get("name") or "")
+            # Ha a célmappa nem érhető el, ez kivételt dob: a bejegyzés marad,
+            # hogy a felhasználó a meghajtó csatlakoztatása után újra próbálja.
+            warning = torrent_fajlok_torlese(
+                info["save_path"], info.get("name") or "", info.get("files")
+            )
         self._last_info = None
         self._last_takaritas()
         self._idle_since = time.time()

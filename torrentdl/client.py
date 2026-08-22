@@ -316,7 +316,11 @@ def fetch_status() -> dict:
     return {
         "daemon": False,
         "job": cfgmod.read_json(cfgmod.path(cfgmod.JOB_NAME)),
-        "last": cfgmod.read_json(cfgmod.path(cfgmod.LAST_NAME)),
+        # A legutóbb befejezett letöltés csak a démon életéig érdekes, és csak ő
+        # tud vele kezdeni valamit (a fájljait is ő törli). Ha nem fut, nem
+        # mutatjuk: egy összeomlás után maradt fájl különben olyan bejegyzést
+        # kínálna a felületen, amit egy frissen induló démon már nem ismer.
+        "last": None,
         "config": cfgmod.load_config(),
     }
 
