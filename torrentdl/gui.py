@@ -39,6 +39,10 @@ FRISSITES_TETLEN_MP = 3000  # ha nincs aktív munka, ennyi is elég
 UZENET_MP = 100  # ilyen sűrűn nézzük meg, üzent-e a háttérszál
 KONZOL_ELENGEDES_MP = 500  # ennyivel az ablak megnyitása után válunk le a konzolról
 
+# Ezekben az állapotokban ment a munka, amikor a program megszakadt: ilyet
+# magunktól is folytatunk (a szüneteltetett vagy hibára futott munkát nem).
+FOLYTATHATO_ALLAPOTOK = ("downloading", "verifying", "seeding")
+
 # Ezt az indító parancsfájl (inditas.bat) állítja be: jelzi, hogy a konzolablak
 # a mi indítónké, tehát a felület megnyitása után nincs rá szükség.
 KONZOL_JELZO = "TORRENTDL_KONZOL"
@@ -134,19 +138,41 @@ def gomb_allapotok(status: dict) -> dict:
     job = status.get("job")
     state = (job or {}).get("state")
     van_munka = job is not None
+    fut = bool(status.get("daemon"))
     # A kész torrent megosztása nem akadálya új letöltésnek: az indításkor
     # a megosztás magától véget ér.
     return {
         "indit": not van_munka or state == "seeding",
-        "szunet": van_munka and state in ("downloading", "verifying", "seeding"),
-        "folytat": van_munka and state in ("paused", "error"),
-        "idozitett": van_munka and state in ("downloading", "verifying", "seeding"),
+        # Amíg a démon nem fut, nincs mit szüneteltetni: a munka úgyis áll.
+        "szunet": fut and van_munka and state in FOLYTATHATO_ALLAPOTOK,
+        # Ha a démon nem fut (összeomlás, gépleállás után), a megszakadt munka
+        # a Folytatás gombbal indítható újra. A felület magától is megpróbálja,
+        # de a gomb legyen kéznél, ha az nem sikerült.
+        "folytat": van_munka and (state in ("paused", "error") or not fut),
+        "idozitett": fut and van_munka and state in FOLYTATHATO_ALLAPOTOK,
         "megszakit": van_munka,
         "torol": van_munka,
         # Ellenőrzés akkor van értelme, ha van fájl a lemezen és épp nem megy
         # már egy ellenőrzés.
         "ellenoriz": van_munka and state in ("downloading", "paused", "seeding", "error"),
     }
+
+
+def demon_inditas_kell(
+    status: dict, inditas_fut: bool = False, mar_probaltuk: bool = False
+) -> bool:
+    """Elinduljon-e magától a háttérdémon a mentett állapot alapján.
+
+    Összeomlás vagy gépleállás után a felület csak a lemezre mentett állapotot
+    látja: a démon nem fut, a letöltés áll. Ha a munka *ment*, amikor a program
+    megszakadt, magunktól elindítjuk a démont – az a mentett állapotból
+    visszaállítja a torrentet, ellenőrzi a lemezen lévő fájlokat, és onnan
+    folytatja, ahol abbamaradt. Amit a felhasználó szüneteltetett, vagy ami
+    hibára futott, azt nem indítjuk el a háta mögött.
+    """
+    if status.get("daemon") or inditas_fut or mar_probaltuk:
+        return False
+    return (status.get("job") or {}).get("state") in FOLYTATHATO_ALLAPOTOK
 
 
 
@@ -163,6 +189,9 @@ class App(tk.Tk):
         self.lekerdezes_fut = False
         self.utolso_naplo = ""
         self.utolso_allapot = None
+        # A megszakadt munkához egyszer magunktól elindítjuk a háttérdémont.
+        self.demon_inditas_fut = False
+        self.demon_inditas_volt = False
 
         self._epit()
         threading.Thread(target=self._munkas, daemon=True).start()
@@ -281,6 +310,15 @@ class App(tk.Tk):
                     self._allapot_kirajzol(ertek)
                 else:
                     self.statusz_cimke.config(text=f"Nem érhető el a háttérdémon: {ertek}")
+            elif cimke == "demon":
+                # A magunktól indított démon: hiba esetén sem ugrik fel ablak,
+                # elég a felirat – a Folytatás gombbal újra lehet próbálni.
+                self.demon_inditas_fut = False
+                if not sikeres:
+                    self.statusz_cimke.config(
+                        text=f"Nem sikerült elindítani a háttérdémont: {ertek}"
+                    )
+                self._allapot_frissites(azonnal=True)
             elif sikeres:
                 self._allapot_frissites(azonnal=True)
             else:
@@ -298,7 +336,20 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ kirajzolás
 
+    def _demon_ebresztes(self, status: dict) -> None:
+        """Megszakadt munka esetén elindítja a háttérdémont (egyszer)."""
+        if status.get("daemon"):
+            # Fut: ha később mégis elszállna, újra megpróbálhatjuk.
+            self.demon_inditas_volt = False
+            return
+        if not demon_inditas_kell(status, self.demon_inditas_fut, self.demon_inditas_volt):
+            return
+        self.demon_inditas_fut = True
+        self.demon_inditas_volt = True
+        self._kuld(client.ensure_daemon, "demon")
+
     def _allapot_kirajzol(self, status: dict) -> None:
+        self._demon_ebresztes(status)
         job = status.get("job")
         self.utolso_allapot = (job or {}).get("state")
         if job:
@@ -356,9 +407,15 @@ class App(tk.Tk):
             gomb.state(["!disabled"] if aktiv else ["disabled"])
 
         cfg = status.get("config") or {}
+        if status.get("daemon"):
+            demon_szoveg = "Háttérdémon: fut"
+        elif self.demon_inditas_fut:
+            demon_szoveg = "Háttérdémon: indul…"
+        else:
+            demon_szoveg = "Háttérdémon: áll"
         self.statusz_cimke.config(
             text=(
-                ("Háttérdémon: fut" if status.get("daemon") else "Háttérdémon: áll")
+                demon_szoveg
                 + f"   •   port: {cfg.get('listen_port', '?')}"
                 + f"   •   DHT: {'be' if cfg.get('enable_dht') else 'ki'}"
                 + f", PEX: {'be' if cfg.get('enable_pex') else 'ki'}"

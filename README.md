@@ -97,6 +97,12 @@ parancssori rész tkinter nélkül is működik.
   dolgozik, és az ablak újranyitásakor ott folytatódik a kijelzés. Ha nincs
   aktív letöltés, a bezárással a háttérdémon is kilép (nem várja meg a
   tétlenségi idő leteltét).
+- Ha a program összeomlott vagy a gép leállt egy letöltés közben, az ablak
+  következő megnyitásakor a felület **magától elindítja a háttérdémont**: az a
+  mentett állapotból visszaállítja a torrentet, ellenőrzi a lemezen lévő
+  fájlokat, és onnan folytatja, ahol abbamaradt. Amit te szüneteltettél vagy
+  ami hibára futott, azt nem indítja el magától – arra ott a **Folytatás**
+  gomb, ami álló háttérdémon mellett is használható.
 - A befejezett letöltésről szóló felirat csak a program futása alatt látszik.
   Ha a fájlok elkészültek és nincs bekapcsolva a letöltés utáni megosztás,
   a következő indításkor a felület alapállapotból indul.

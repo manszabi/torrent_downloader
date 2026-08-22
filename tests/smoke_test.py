@@ -516,6 +516,18 @@ def main() -> int:
         assert status(home)["job"] is not None, "a megszakadt letöltés adatai elvesztek"
         text = run(home, "status").stdout
         assert "megszakadt" in text, text
+
+        # Ezt az utat járja a felület is: a démon puszta elindítása folytatja a
+        # munkát (visszaáll a mentett állapotból, ellenőriz, és tölt tovább) -
+        # külön "resume" parancs nélkül.
+        run(home, "daemon", "start")
+        wait_for(
+            lambda: (status(home)["job"] or {}).get("state") in ("verifying", "downloading"),
+            timeout=30,
+            what="a megszakadt munka folytatása a démon indításakor",
+            home=home,
+        )
+
         run(home, "resume")
         wait_for(
             lambda: status(home)["job"]["state"] == "downloading",

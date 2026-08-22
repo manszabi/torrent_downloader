@@ -33,6 +33,7 @@ kimenet_utf8()
 from torrentdl.gui import (  # noqa: E402
     KONZOL_JELZO,
     App,
+    demon_inditas_kell,
     gomb_allapotok,
     konzol_elengedes,
     tcl_kornyezet,
@@ -112,6 +113,46 @@ def main() -> int:
         "ellenőrzés gomb munka nélkül inaktív",
         gomb_allapotok({"job": None})["ellenoriz"],
         False,
+    )
+
+    # --- Megszakadt letöltés: a felület magától elindítja a háttérdémont.
+    # (Összeomlás vagy gépleállás után a mentett állapot megvan, de a démon áll.)
+    megszakadt = {"daemon": False, "job": {"state": "downloading"}}
+    check("megszakadt letöltéshez elindítjuk a démont", demon_inditas_kell(megszakadt), True)
+    check(
+        "amíg indul, nem indítjuk újra",
+        demon_inditas_kell(megszakadt, inditas_fut=True),
+        False,
+    )
+    check(
+        "sikertelen indítás után nem próbálkozunk körbe-körbe",
+        demon_inditas_kell(megszakadt, mar_probaltuk=True),
+        False,
+    )
+    check(
+        "szüneteltetett munkát nem indítunk el magunktól",
+        demon_inditas_kell({"daemon": False, "job": {"state": "paused"}}),
+        False,
+    )
+    check(
+        "hibára futott munkát sem",
+        demon_inditas_kell({"daemon": False, "job": {"state": "error"}}),
+        False,
+    )
+    check(
+        "futó démonhoz nincs teendő",
+        demon_inditas_kell({"daemon": True, "job": {"state": "downloading"}}),
+        False,
+    )
+    check("munka nélkül nincs mit indítani", demon_inditas_kell({"daemon": False}), False)
+
+    # A gombok is igazodnak ahhoz, hogy fut-e a démon.
+    check("álló démonnál a Folytatás aktív", gomb_allapotok(megszakadt)["folytat"], True)
+    check("álló démonnál a Szünet inaktív", gomb_allapotok(megszakadt)["szunet"], False)
+    check(
+        "futó démonnál a Szünet aktív",
+        gomb_allapotok({"daemon": True, "job": {"state": "downloading"}})["szunet"],
+        True,
     )
 
     # Windowson a .venv-ből induló Python nem találja magától a Tcl/Tk-t.
