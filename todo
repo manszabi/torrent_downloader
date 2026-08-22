@@ -1,8 +1,2 @@
-1: Ha nem zártam be a guit, és vége a letöltésnek/vagy megosztásnak, és az aktuális letöltés ablakban szerepel a torrent, akkor nem tudom törölni a Törlés fájlokkal gombbal a torrentet mivel nem aktív a gomb
-2: Ha törlöm a torrent fájljait akkor ha könyvtárba töltődött le (a torrentben sokszor a torrent neve a könyvtár vagy a film címe stb.) nem törlődik a könyvtára
-3: log file törlésére gomb ill. a beállításfájlokhoz uggrás gomb, új explorer ablak nyílik meg
-4: alapértelmezett letöltés könyvtár windowsnál a Downloads aktuális helye legyen, linux-nál a home könyvtárt
-5: ha megszakítom a torrentet legyen agy ablak ami megkérdezi hogy a letöltött fájljait törölje-e, figyelj ha könyvtárba töltődött azt is törölni kell,
-6: port nyitás a routeren be/ki kapcsolás a settingsben (ha a routeren nincs engedélyezve ne legyen gond
-7: ha befejeződött a letöltés vagy a letöltés utáni megosztás akkor a háttér daemon is leáll/bezáródik?, ne fusson a háttérben ha nincs torrent letöltés/megosztás, egy ideig futhat de biztosan álljon le egy idő után ha nincs rá szükség, most azt látom hogy marad pythonw.exe a háttérben több is
-8: legyen egy jól látható jelzés az ablakon, bal felső sarokban, kis felírat legyen mellette ezzel a szöveggel:Daemon aktív?, mondjuk legyen zöld pont ha fut a daemon és piros ha nem fut
+A _megszakitas az utolsó ismert állapotból dolgozik (1–3 mp friss). Ha épp a kattintás és a párbeszéd között fejeződik be a letöltés, a démon „nincs aktív letöltés" hibát ad — érthető üzenet, ritka eset.
+A discard csak a felületről érhető el, parancssorból nincs rá kapcsoló (a todo a felületről szólt).
