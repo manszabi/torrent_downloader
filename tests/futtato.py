@@ -31,11 +31,27 @@ for _folyam in (sys.stdout, sys.stderr):
 KORNYEZET = dict(os.environ, PYTHONIOENCODING="utf-8:replace")
 
 
+# Egy lépés sem futhat ennél tovább. Beragadás (például válaszra váró ablak)
+# nélküle a CI fél órás időkorlátjáig áll, és a futás kimenet nélkül szakad
+# meg; így viszont az összegzés megmutatja, melyik lépés akadt el.
+LEPES_IDOKORLAT = 900
+
+
 def futtat(nev: str, parancs: list[str]) -> str:
     print("\n" + "=" * 70)
     print(f"  {nev}")
     print("=" * 70)
-    proc = subprocess.run(parancs, cwd=str(ITT.parent), env=KORNYEZET, check=False)
+    try:
+        proc = subprocess.run(
+            parancs,
+            cwd=str(ITT.parent),
+            env=KORNYEZET,
+            check=False,
+            timeout=LEPES_IDOKORLAT,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"\n[HIBA] {nev}: {LEPES_IDOKORLAT} másodperc alatt sem fejeződött be.")
+        return "IDŐTÚLLÉPÉS"
     return "rendben" if proc.returncode == 0 else "HIBA"
 
 
@@ -83,7 +99,7 @@ def main() -> int:
     for nev, allapot in eredmenyek.items():
         print(f"  {nev:<24} {allapot}")
     print("=" * 70)
-    return 1 if any(v == "HIBA" for v in eredmenyek.values()) else 0
+    return 1 if any(v in ("HIBA", "IDŐTÚLLÉPÉS") for v in eredmenyek.values()) else 0
 
 
 if __name__ == "__main__":

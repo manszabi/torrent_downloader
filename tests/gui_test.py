@@ -9,6 +9,8 @@ Windowson egyszerűen: python tests\\gui_test.py
 
 from __future__ import annotations
 
+import contextlib
+import faulthandler
 import os
 import random
 import shutil
@@ -30,6 +32,7 @@ from torrentdl import config as cfgmod  # noqa: E402
 from torrentdl.format import human_bytes, human_time, kimenet_utf8  # noqa: E402
 
 kimenet_utf8()
+from torrentdl import gui as guimod  # noqa: E402
 from torrentdl.gui import (  # noqa: E402
     KONZOL_JELZO,
     PONT_PIROS,
@@ -42,6 +45,48 @@ from torrentdl.gui import (  # noqa: E402
 )
 
 HIBAK = []
+
+# Biztosítófék: ha egy párbeszéd vagy a démon beragad, a teszt ne álljon meg
+# némán (a CI ilyenkor csak fél óra után szakítja meg, kimenet nélkül). A
+# faulthandler kiírja, melyik soron állt meg, és kilép.
+faulthandler.dump_traceback_later(600, exit=True)
+
+
+def szin(widget):
+    """A Tcl újabb változatai szín-objektumot adnak vissza szöveg helyett."""
+    return str(widget.cget("foreground"))
+
+
+class Megnyitott:
+    """Feljegyzi, milyen kezdőállapottal nyílt meg a párbeszéd."""
+
+    def __init__(self):
+        self.fajlokkal = []
+
+
+@contextlib.contextmanager
+def valaszol_a_kerdesre(rendben: bool):
+    """A megszakítás párbeszédét valódi ablakként nyitjuk, csak a gombot nyomjuk meg.
+
+    A felület saját ablakot nyit (nem messagebox-ot), és `wait_window`-val vár
+    rá: válasz nélkül a teszt örökre megállna. Az eredeti osztály marad – így a
+    jelölőnégyzet és a gombok is a valódiak –, egy időzítő nyomja meg helyettünk
+    a "Rendben" vagy a "Mégse" gombot.
+    """
+    naplo = Megnyitott()
+    eredeti = guimod.MegszakitasKerdes
+
+    class Onmukodo(eredeti):  # type: ignore[valid-type,misc]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            naplo.fajlokkal.append(self.fajlokkal.get())
+            self.after(50, self._ok if rendben else self.destroy)
+
+    guimod.MegszakitasKerdes = Onmukodo
+    try:
+        yield naplo
+    finally:
+        guimod.MegszakitasKerdes = eredeti
 
 
 def check(nev, kapott, vart):
@@ -238,7 +283,7 @@ def main() -> int:
 
     app = App()
     # Induláskor még nem tudjuk, fut-e a démon: a jelzés piros.
-    check("a démonjelző induláskor piros", app.demon_pont.cget("foreground"), PONT_PIROS)
+    check("a démonjelző induláskor piros", szin(app.demon_pont), PONT_PIROS)
     porgeti(app, 0.5)
     check("ablak címe", app.title(), "Torrent letöltő")
     check("induláskor nincs munka", app.megszakit_gomb.instate(["disabled"]), True)
@@ -282,10 +327,10 @@ def main() -> int:
         app.torol_gomb.instate(["!disabled"]),
         True,
     )
-    check("a démonjelző zöld, amíg fut a démon", app.demon_pont.cget("foreground"), PONT_ZOLD)
+    check("a démonjelző zöld, amíg fut a démon", szin(app.demon_pont), PONT_ZOLD)
     check("a napló megjelent az ablakban", "démon elindult" in app.utolso_naplo, True)
     check("a felirat a kész letöltésről szól",
-          "elkészült" in app.allapot_cimke.cget("text"), True)
+          "elkészült" in str(app.allapot_cimke.cget("text")), True)
 
     # --- új letöltés indítása, majd szüneteltetés és megszakítás
     masik = torrent_keszit(MUNKA / "adatok2" / "masik", MUNKA / "masik.torrent")
@@ -300,12 +345,18 @@ def main() -> int:
     app._folytatas()
     var(app, lambda: (allapot() or {}).get("state") == "downloading", 20, "folytatás")
 
-    import tkinter.messagebox as mb2
+    # A megszakítás saját párbeszédet nyit (nem messagebox): a teszt a valódi
+    # ablakot nyitja meg, és a gombot nyomja meg helyettünk.
 
-    eredeti_kerdes = mb2.askyesno
-    mb2.askyesno = lambda *a, **k: True
-    app._megszakitas(True)
-    mb2.askyesno = eredeti_kerdes
+    # "Mégse": a letöltés érintetlen marad.
+    with valaszol_a_kerdesre(rendben=False):
+        app._megszakitas(True)
+    porgeti(app, 0.5)
+    check("Mégse után a letöltés megmarad", allapot() is not None, True)
+
+    with valaszol_a_kerdesre(rendben=True) as megnyitott:
+        app._megszakitas(True)
+    check("a megszakítás megkérdezte a fájlok sorsát", megnyitott.fajlokkal, [True])
     var(app, lambda: allapot() is None, 30, "megszakítás a fájlokkal")
     maradek = [p for p in (MUNKA / "cel2").rglob("*") if p.is_file()]
     check("a fájlok törlődtek", maradek, [])
